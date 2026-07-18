@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments (uv also writes .venv/.gitignore, this is belt-and-suspenders)
+.venv/
+venv/
+
+# SQLite / local time-series stores
+*.db
+*.db-wal
+*.db-shm
+spotfloor.db
+
+# Secrets & credentials — never commit; AWS creds live in ~/.aws, keep it that way
+.env
+.env.*
+*.pem
+credentials
+aws_credentials
+
+# OS / editor cruft
+.DS_Store
+.idea/
+.vscode/

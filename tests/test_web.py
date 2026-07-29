@@ -227,33 +227,47 @@ def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
 # "unsupported type for timedelta hours component: member_descriptor".
 
 
-def test_an_unset_environment_yields_the_declared_defaults(monkeypatch) -> None:
-    for name in (
-        "SPOTFLOOR_DB",
-        "SPOTFLOOR_AWS_REGIONS",
-        "SPOTFLOOR_AWS_INSTANCE_TYPES",
-        "SPOTFLOOR_POLL_INTERVAL_S",
-        "SPOTFLOOR_HISTORY_HOURS",
-        "SPOTFLOOR_BUCKETS",
-    ):
-        monkeypatch.delenv(name, raising=False)
+SPOTFLOOR_ENV_VARS = (
+    "SPOTFLOOR_DB",
+    "SPOTFLOOR_AWS_REGIONS",
+    "SPOTFLOOR_AWS_INSTANCE_TYPES",
+    "SPOTFLOOR_POLL_INTERVAL_S",
+    "SPOTFLOOR_HISTORY_HOURS",
+    "SPOTFLOOR_BUCKETS",
+)
 
+
+@pytest.fixture
+def clean_env(monkeypatch):
+    """Clear every SPOTFLOOR_* variable so these tests read one environment.
+
+    Without this they inherit the developer's shell or the CI job's env and pass
+    or fail on where they run. That is not hypothetical: the Pages workflow sets
+    SPOTFLOOR_BUCKETS job-wide, and the override test below -- which asserts an
+    untouched variable falls through to its default -- went green locally and red
+    in CI on exactly that.
+    """
+    for name in SPOTFLOOR_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def test_an_unset_environment_yields_the_declared_defaults(clean_env) -> None:
     assert WebConfig.from_env() == WebConfig()
 
 
-def test_defaults_are_usable_values_not_descriptors(monkeypatch) -> None:
+def test_defaults_are_usable_values_not_descriptors(clean_env) -> None:
     """The specific failure: a default that cannot do arithmetic."""
-    monkeypatch.delenv("SPOTFLOOR_HISTORY_HOURS", raising=False)
     config = WebConfig.from_env()
 
     assert isinstance(config.history_hours, int)
     assert timedelta(hours=config.history_hours) == timedelta(hours=6)
 
 
-def test_environment_overrides_are_parsed(monkeypatch) -> None:
-    monkeypatch.setenv("SPOTFLOOR_DB", "/tmp/x.db")
-    monkeypatch.setenv("SPOTFLOOR_AWS_REGIONS", "us-east-1, us-west-2 ,")
-    monkeypatch.setenv("SPOTFLOOR_HISTORY_HOURS", "12")
+def test_environment_overrides_are_parsed(clean_env) -> None:
+    clean_env.setenv("SPOTFLOOR_DB", "/tmp/x.db")
+    clean_env.setenv("SPOTFLOOR_AWS_REGIONS", "us-east-1, us-west-2 ,")
+    clean_env.setenv("SPOTFLOOR_HISTORY_HOURS", "12")
 
     config = WebConfig.from_env()
 
@@ -264,13 +278,12 @@ def test_environment_overrides_are_parsed(monkeypatch) -> None:
     assert config.buckets == WebConfig().buckets
 
 
-def test_a_config_from_env_actually_renders_a_page(store, monkeypatch) -> None:
+def test_a_config_from_env_actually_renders_a_page(store, clean_env) -> None:
     """End-to-end guard: boot the app the way scripts/serve.py does.
 
     The bug was invisible to every test that passed a hand-built WebConfig, so
     this one insists the env path reaches a rendered page.
     """
-    monkeypatch.delenv("SPOTFLOOR_HISTORY_HOURS", raising=False)
     app = create_app(store=store, config=WebConfig.from_env(), poll=False)
     with TestClient(app) as client:
         assert client.get("/").status_code == 200

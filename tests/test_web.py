@@ -209,6 +209,24 @@ def test_a_snapshot_links_relative_api_paths(snapshot_client) -> None:
     assert "<code>/api/market</code>" not in body
 
 
+def test_caller_supplied_notes_survive_startup_and_reach_the_page(seeded) -> None:
+    """A missing provider must never be silently missing.
+
+    The first published snapshot had no AWS rows and no explanation: the script
+    built the providers, got back "AWS is not configured", assigned it to
+    app.state.notes -- and lifespan startup, which runs afterwards, reset the
+    list. The page looked like a market with no AWS capacity rather than a
+    market we did not query.
+    """
+    note = "AWS is not configured (no credentials found)"
+    app = create_app(
+        store=seeded, config=WebConfig(), poll=False, snapshot=True, notes=[note]
+    )
+    with TestClient(app) as client:
+        assert note in client.get("/").text
+        assert note in client.get("/api/market").json()["notes"]
+
+
 def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
     """Self-contained by construction: no CDN, no fonts, no charting library."""
     import re

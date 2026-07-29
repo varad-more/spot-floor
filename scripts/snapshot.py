@@ -137,10 +137,14 @@ def main() -> int:
         records = store.latest(OfferingFilter(), now=now)
         gpu_models = sorted({r.offering.gpu_model for r in records})
 
-        app = create_app(store=store, config=config, poll=False, snapshot=True)
-        # create_app only populates notes when it builds providers itself; this
-        # script polled on its own, so hand them over.
-        app.state.notes = notes
+        # Notes go through the constructor, not app.state: lifespan startup runs
+        # later and resets state, which silently dropped the "AWS is not
+        # configured" caveat from the first published snapshot -- leaving a page
+        # with no AWS rows and no explanation, which is precisely what that note
+        # exists to prevent.
+        app = create_app(
+            store=store, config=config, poll=False, snapshot=True, notes=notes
+        )
 
         written = asyncio.run(render(app, out, gpu_models, history_hours=config.history_hours))
     finally:

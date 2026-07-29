@@ -225,6 +225,7 @@ def create_app(
     config: WebConfig | None = None,
     poll: bool = True,
     snapshot: bool = False,
+    notes: Sequence[str] | None = None,
 ) -> FastAPI:
     """Build the app.
 
@@ -237,13 +238,18 @@ def create_app(
     point-in-time snapshot rather than a live view. A stale page that *looks*
     live is the same kind of claim this project refuses to make about
     availability, so the mode is explicit rather than inferred.
+
+    ``notes`` are caller-supplied caveats rendered on the page -- for a caller
+    that assembled the providers itself and so knows what is missing. They must
+    be passed here rather than assigned to ``app.state`` afterwards, because
+    lifespan startup runs later and would overwrite them.
     """
     config = config or WebConfig.from_env()
     owns_store = store is None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Iterator[None]:
-        app.state.notes = []
+        app.state.notes = list(notes or [])
         if owns_store:
             app.state.store = SqliteTimeSeriesStore(config.db_path)
         else:
@@ -253,8 +259,8 @@ def create_app(
         if poll:
             selected = list(providers) if providers is not None else None
             if selected is None:
-                selected, notes = build_providers(config)
-                app.state.notes = notes
+                selected, discovered = build_providers(config)
+                app.state.notes = [*app.state.notes, *discovered]
             poller = Poller(selected, app.state.store, interval_s=config.poll_interval_s)
             poller.start()
 

@@ -9,15 +9,15 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.base import OfferingFilter, TimeRange
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
 
 T0 = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 
 
-def offering(price: float, *, external_id: str = "m1") -> GpuOffering:
-    return GpuOffering(
+def offering(price: float, *, external_id: str = "m1") -> InstanceOffering:
+    return InstanceOffering(
         provider="vast",
         external_id=external_id,
         instance_type="8xH100_SXM_80GB",

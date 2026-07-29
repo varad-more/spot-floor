@@ -1,10 +1,16 @@
 """The dashboard, driven through its real routes against a real store.
 
-The load-bearing test in this file is
-``test_aws_availability_is_rendered_as_an_explicit_unknown``: a UI is where the
-honesty constraint is easiest to break, because "leave the cell blank" is the
-default behaviour of every table renderer and it silently reads as "none
-available".
+The load-bearing tests in this file are the ones about what the page must *say*:
+
+* ``test_availability_is_rendered_as_an_explicit_unknown`` -- a UI is where the
+  honesty constraint is easiest to break, because "leave the cell blank" is the
+  default behaviour of every table renderer and it silently reads as "none
+  available".
+* ``test_the_page_names_the_zone_behind_every_regional_price`` -- a bare regional
+  minimum is a number you cannot act on, because you launch into a zone.
+* ``test_volatility_is_never_labelled_as_availability`` -- price movement is a real
+  fact and a fair contention proxy, and relabelling it as fulfillment would be
+  exactly the fabrication this project refuses.
 """
 
 from __future__ import annotations
@@ -14,33 +20,38 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
 from spotfloor.web.app import WebConfig, create_app
 
 
 def offering(
     *,
-    provider: str = "vast",
-    external_id: str | None = "m1",
-    gpu_model: str = "H100_SXM_80GB",
-    gpu_count: int = 8,
-    region: str = "Japan, JP",
-    price: float = 16.0,
-    kind: PriceKind = PriceKind.ON_DEMAND,
-    availability: Availability = Availability.AVAILABLE,
+    provider: str = "aws",
+    instance_type: str = "m5.large",
+    region: str = "us-east-1",
+    zone: str | None = "us-east-1a",
+    price: float = 0.05,
+    kind: PriceKind = PriceKind.SPOT,
+    availability: Availability = Availability.UNKNOWN,
+    gpu_count: int = 0,
+    gpu_model: str | None = None,
+    vcpus: int | None = 2,
+    memory_gib: float | None = 8.0,
     observed_at: datetime | None = None,
-) -> GpuOffering:
-    return GpuOffering(
+) -> InstanceOffering:
+    return InstanceOffering(
         provider=provider,
-        external_id=external_id,
-        instance_type=f"{gpu_count}x{gpu_model}",
-        gpu_model=gpu_model,
-        gpu_count=gpu_count,
+        instance_type=instance_type,
         region=region,
+        zone=zone,
         price_usd_hr=price,
         price_kind=kind,
         availability=availability,
+        gpu_count=gpu_count,
+        gpu_model=gpu_model,
+        vcpus=vcpus,
+        memory_gib=memory_gib,
         observed_at=observed_at or datetime.now(UTC),
     )
 
@@ -54,20 +65,26 @@ def store(tmp_path):
 
 @pytest.fixture
 def seeded(store):
-    """Two providers, same silicon: the cross-provider comparison the page exists for."""
+    """Two regions, two zones inside one: the comparison the page exists for."""
     now = datetime.now(UTC)
     store.write(
         [
-            offering(provider="vast", external_id="m1", price=16.0,
-                     availability=Availability.AVAILABLE),
-            offering(provider="vast", external_id="m2", price=12.0,
-                     kind=PriceKind.SPOT, availability=Availability.CONSTRAINED),
-            offering(provider="aws", external_id=None, region="us-east-1a",
-                     price=24.0, kind=PriceKind.SPOT,
-                     availability=Availability.UNKNOWN),
-            offering(provider="aws", external_id=None, region="us-west-2b",
-                     price=20.0, kind=PriceKind.SPOT,
-                     availability=Availability.UNKNOWN),
+            # us-east-1 has a cheap zone and a dear one -> a real intra-region spread.
+            offering(region="us-east-1", zone="us-east-1a", price=0.088),
+            offering(region="us-east-1", zone="us-east-1d", price=0.051),
+            # us-west-2 is a separate market entirely.
+            offering(region="us-west-2", zone="us-west-2b", price=0.043),
+            # A GPU instance, so the $/GPU column has something in it.
+            offering(
+                instance_type="p5.48xlarge",
+                region="us-east-1",
+                zone="us-east-1b",
+                price=20.0,
+                gpu_count=8,
+                gpu_model="H100_SXM_80GB",
+                vcpus=192,
+                memory_gib=2048.0,
+            ),
         ],
         now=now - timedelta(minutes=1),
     )
@@ -76,7 +93,7 @@ def seeded(store):
 
 @pytest.fixture
 def client(seeded):
-    app = create_app(store=seeded, config=WebConfig(history_hours=6), poll=False)
+    app = create_app(store=seeded, config=WebConfig(history_days=7), poll=False)
     with TestClient(app) as c:
         yield c
 
@@ -85,10 +102,10 @@ def test_the_page_renders(client) -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "spotfloor" in response.text
-    assert "H100_SXM_80GB" in response.text
+    assert "m5.large" in response.text
 
 
-def test_aws_availability_is_rendered_as_an_explicit_unknown(client) -> None:
+def test_availability_is_rendered_as_an_explicit_unknown(client) -> None:
     """Never a blank cell. `unknown` must be visible on the page as a word."""
     body = client.get("/").text
     assert "unknown" in body
@@ -96,64 +113,99 @@ def test_aws_availability_is_rendered_as_an_explicit_unknown(client) -> None:
     assert "Spot Placement Score" in body
 
 
-def test_the_page_never_claims_to_have_seen_the_whole_market(client) -> None:
+def test_the_page_names_the_zone_behind_every_regional_price(client) -> None:
+    """You launch into a zone, so a bare regional minimum is unactionable."""
     body = client.get("/").text
-    assert "Cheapest observed" in body
+    assert "us-east-1d" in body, "the cheapest zone is not named on the page"
+    assert "Cheapest zone" in body
 
 
-def test_regions_are_labelled_provider_native(client) -> None:
+def test_the_page_states_the_spread_the_rollup_hid(client) -> None:
     body = client.get("/").text
-    assert "provider-native" in body
-    # Both providers' own region strings survive verbatim; neither is translated.
-    assert "Japan, JP" in body
-    assert "us-east-1a" in body
+    assert "AZ spread" in body
 
 
-def test_market_api_separates_price_from_obtainable_price(client) -> None:
+def test_volatility_is_never_labelled_as_availability(client) -> None:
+    """Price movement is a contention proxy, not a fulfillment signal."""
+    body = client.get("/").text
+    assert "Price moves" in body
+    assert "not availability" in body
+
+
+def test_regions_are_not_merged_on_the_page(client) -> None:
+    body = client.get("/").text
+    assert "us-east-1" in body
+    assert "us-west-2" in body
+
+
+def test_market_api_reports_the_cheapest_zone_and_the_spread(client) -> None:
     payload = client.get("/api/market").json()
-    rows = {(r["provider"], r["price_kind"]): r for r in payload["rows"]}
+    rows = {(r["instance_type"], r["region"]): r for r in payload["rows"]}
 
-    vast = rows[("vast", "on_demand")]
-    assert vast["cheapest_per_gpu_hr"] == pytest.approx(2.0)
-    assert vast["cheapest_obtainable_per_gpu_hr"] == pytest.approx(2.0)
-    assert vast["availability_known"] is True
+    east = rows[("m5.large", "us-east-1")]
+    assert east["cheapest_usd_hr"] == pytest.approx(0.051)
+    assert east["cheapest_zone"] == "us-east-1d"
+    assert east["dearest_zone"] == "us-east-1a"
+    assert east["zone_count"] == 2
+    assert east["spread_pct"] == pytest.approx(72.55, abs=0.01)
 
-    aws = rows[("aws", "spot")]
-    # AWS has real prices...
-    assert aws["cheapest_per_gpu_hr"] == pytest.approx(2.5)
-    # ...and makes no claim whatsoever about getting them.
-    assert aws["cheapest_obtainable_per_gpu_hr"] is None
-    assert aws["availability_known"] is False
-    assert aws["obtainable_nodes"] == 0
-    assert aws["node_count"] == 2
+    # A different region is a different row, never averaged in.
+    west = rows[("m5.large", "us-west-2")]
+    assert west["cheapest_usd_hr"] == pytest.approx(0.043)
+    assert west["zone_count"] == 1
 
 
-def test_an_aws_row_never_merges_two_regions_into_one_price(client) -> None:
-    """us-east-1a and us-west-2b are different markets; the row reports the cheaper."""
+def test_market_api_makes_no_availability_claim(client) -> None:
     payload = client.get("/api/market").json()
-    aws = next(r for r in payload["rows"] if r["provider"] == "aws")
-    assert aws["cheapest_region"] == "us-west-2b"
-    assert aws["node_count"] == 2
+    for row in payload["rows"]:
+        assert row["availability"] == "unknown"
+        assert row["availability_known"] is False
+
+
+def test_market_api_carries_the_hardware_spec(client) -> None:
+    payload = client.get("/api/market").json()
+    p5 = next(r for r in payload["rows"] if r["instance_type"] == "p5.48xlarge")
+
+    assert p5["gpu_count"] == 8
+    assert p5["gpu_model"] == "H100_SXM_80GB"
+    assert p5["cheapest_per_gpu_hr"] == pytest.approx(2.5)
+    assert p5["vcpus"] == 192
+
+
+def test_a_cpu_row_has_no_per_gpu_price(client) -> None:
+    payload = client.get("/api/market").json()
+    # Keyed on (type, region): m5.large appears once per region, and rows sort by
+    # price, so picking "the first m5.large" would silently depend on which region
+    # happens to be cheapest.
+    m5 = next(
+        r
+        for r in payload["rows"]
+        if (r["instance_type"], r["region"]) == ("m5.large", "us-east-1")
+    )
+
+    assert m5["gpu_count"] == 0
+    assert m5["cheapest_per_gpu_hr"] is None
+    assert m5["cheapest_per_vcpu_hr"] == pytest.approx(0.051 / 2)
 
 
 def test_history_api_returns_a_bucketed_series(client) -> None:
-    payload = client.get("/api/history/H100_SXM_80GB?hours=6&buckets=12").json()
-    assert payload["gpu_model"] == "H100_SXM_80GB"
+    payload = client.get("/api/history/m5.large?days=1&buckets=12").json()
+    assert payload["instance_type"] == "m5.large"
     assert len(payload["points"]) == 12
-    observed = [p for p in payload["points"] if p["floor_per_gpu_hr"] is not None]
+    observed = [p for p in payload["points"] if p["floor_usd_hr"] is not None]
     assert observed, "the seeded observation should appear in some bucket"
 
 
-def test_history_api_can_scope_to_one_provider(client) -> None:
-    payload = client.get("/api/history/H100_SXM_80GB?provider=aws&buckets=8").json()
-    floors = [p["floor_per_gpu_hr"] for p in payload["points"] if p["floor_per_gpu_hr"]]
-    # Vast's cheaper $1.50/GPU spot node must not leak into an AWS-scoped series.
-    assert floors and min(floors) == pytest.approx(2.5)
+def test_history_api_can_scope_to_one_region(client) -> None:
+    payload = client.get("/api/history/m5.large?region=us-east-1&buckets=8").json()
+    floors = [p["floor_usd_hr"] for p in payload["points"] if p["floor_usd_hr"]]
+    # us-west-2's cheaper $0.043 must not leak into a us-east-1-scoped series.
+    assert floors and min(floors) == pytest.approx(0.051)
 
 
-def test_history_for_an_unobserved_model_is_404_not_an_empty_chart(client) -> None:
+def test_history_for_an_unobserved_type_is_404_not_an_empty_chart(client) -> None:
     """Silence is not a flat line at zero."""
-    assert client.get("/api/history/B200_SXM_192GB").status_code == 404
+    assert client.get("/api/history/x99.nonexistent").status_code == 404
 
 
 def test_an_empty_store_renders_a_page_instead_of_crashing(store) -> None:
@@ -167,6 +219,26 @@ def test_an_empty_store_renders_a_page_instead_of_crashing(store) -> None:
 
 def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
+
+
+# --- client-side controls ----------------------------------------------------
+#
+# "Let the user select what they want tracked" has to work on a static host, so
+# filtering happens in the browser over rows already in the document.
+
+
+def test_the_page_ships_filter_controls(client) -> None:
+    body = client.get("/").text
+    assert 'id="q"' in body
+    assert 'id="family"' in body
+    assert 'id="region"' in body
+    assert 'id="gpuonly"' in body
+
+
+def test_rows_carry_the_data_attributes_the_filters_read(client) -> None:
+    body = client.get("/").text
+    for attribute in ("data-type", "data-family", "data-region", "data-gpu", "data-price"):
+        assert attribute in body
 
 
 # --- snapshot mode -----------------------------------------------------------
@@ -210,15 +282,15 @@ def test_a_snapshot_links_relative_api_paths(snapshot_client) -> None:
 
 
 def test_caller_supplied_notes_survive_startup_and_reach_the_page(seeded) -> None:
-    """A missing provider must never be silently missing.
+    """A missing region must never be silently missing.
 
     The first published snapshot had no AWS rows and no explanation: the script
     built the providers, got back "AWS is not configured", assigned it to
     app.state.notes -- and lifespan startup, which runs afterwards, reset the
-    list. The page looked like a market with no AWS capacity rather than a
-    market we did not query.
+    list. The page looked like a market with no capacity rather than a market we
+    did not query.
     """
-    note = "AWS is not configured (no credentials found)"
+    note = "eu-west-1 could not be priced (AuthFailure)"
     app = create_app(
         store=seeded, config=WebConfig(), poll=False, snapshot=True, notes=[note]
     )
@@ -239,18 +311,18 @@ def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
 #
 # `from_env` was the one path the tests did not touch, because every test builds
 # a WebConfig directly -- and it was broken. It read its defaults off the class
-# (`os.getenv("X", cls.history_hours)`), but WebConfig is a slots dataclass, so
+# (`os.getenv("X", cls.history_days)`), but WebConfig is a slots dataclass, so
 # class-level access yields the slot *descriptor*, not the default. The app
-# booted, served /healthz, and 500'd on the first real page with
-# "unsupported type for timedelta hours component: member_descriptor".
+# booted, served /healthz, and 500'd on the first real page.
 
 
 SPOTFLOOR_ENV_VARS = (
     "SPOTFLOOR_DB",
-    "SPOTFLOOR_AWS_REGIONS",
-    "SPOTFLOOR_AWS_INSTANCE_TYPES",
+    "SPOTFLOOR_REGIONS",
+    "SPOTFLOOR_INSTANCE_TYPES",
     "SPOTFLOOR_POLL_INTERVAL_S",
-    "SPOTFLOOR_HISTORY_HOURS",
+    "SPOTFLOOR_HISTORY_DAYS",
+    "SPOTFLOOR_BACKFILL_DAYS",
     "SPOTFLOOR_BUCKETS",
 )
 
@@ -278,22 +350,27 @@ def test_defaults_are_usable_values_not_descriptors(clean_env) -> None:
     """The specific failure: a default that cannot do arithmetic."""
     config = WebConfig.from_env()
 
-    assert isinstance(config.history_hours, int)
-    assert timedelta(hours=config.history_hours) == timedelta(hours=6)
+    assert isinstance(config.history_days, int)
+    assert timedelta(days=config.history_days) == timedelta(days=7)
 
 
 def test_environment_overrides_are_parsed(clean_env) -> None:
     clean_env.setenv("SPOTFLOOR_DB", "/tmp/x.db")
-    clean_env.setenv("SPOTFLOOR_AWS_REGIONS", "us-east-1, us-west-2 ,")
-    clean_env.setenv("SPOTFLOOR_HISTORY_HOURS", "12")
+    clean_env.setenv("SPOTFLOOR_REGIONS", "us-east-1, us-west-2 ,")
+    clean_env.setenv("SPOTFLOOR_HISTORY_DAYS", "14")
 
     config = WebConfig.from_env()
 
     assert config.db_path == "/tmp/x.db"
-    assert config.aws_regions == ("us-east-1", "us-west-2")
-    assert config.history_hours == 12
+    assert config.regions == ("us-east-1", "us-west-2")
+    assert config.history_days == 14
     # Untouched variables still fall through to the declared default.
     assert config.buckets == WebConfig().buckets
+
+
+def test_regions_default_to_none_meaning_discover_every_enabled_one(clean_env) -> None:
+    """`None` is not "no regions" -- it is "ask the account which ones it has"."""
+    assert WebConfig.from_env().regions is None
 
 
 def test_a_config_from_env_actually_renders_a_page(store, clean_env) -> None:
@@ -309,7 +386,7 @@ def test_a_config_from_env_actually_renders_a_page(store, clean_env) -> None:
 
 
 def test_a_page_load_does_not_fetch_from_providers(seeded) -> None:
-    """Rendering reads storage only -- traffic must not drive provider rate limits."""
+    """Rendering reads storage only -- traffic must not drive API quota."""
 
     class ExplodingProvider:
         name = "boom"

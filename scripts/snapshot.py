@@ -44,7 +44,9 @@ from spotfloor.web.app import WebConfig, build_providers, create_app
 logger = logging.getLogger("snapshot")
 
 
-async def render(app, out: Path, gpu_models: list[str], *, history_hours: int) -> list[Path]:
+async def render(
+    app, out: Path, instance_types: list[str], *, history_days: int
+) -> list[Path]:
     """Fetch every route from the app over ASGI and write it to disk."""
     written: list[Path] = []
     transport = httpx.ASGITransport(app=app)
@@ -66,13 +68,13 @@ async def render(app, out: Path, gpu_models: list[str], *, history_hours: int) -
 
             history_dir = out / "api" / "history"
             history_dir.mkdir(parents=True, exist_ok=True)
-            for model in gpu_models:
+            for instance_type in instance_types:
                 response = await client.get(
-                    f"/api/history/{model}", params={"hours": history_hours}
+                    f"/api/history/{instance_type}", params={"days": history_days}
                 )
                 if response.status_code != 200:
                     continue
-                path = history_dir / f"{model}.json"
+                path = history_dir / f"{instance_type}.json"
                 path.write_text(json.dumps(response.json(), indent=2))
                 written.append(path)
 
@@ -83,10 +85,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Render a static dashboard snapshot.")
     parser.add_argument("--out", default="site", help="output directory")
     parser.add_argument(
-        "--retain-hours",
+        "--retain-days",
         type=int,
         default=0,
-        help="drop segments older than this; defaults to the chart window + 25%%",
+        help="drop segments older than this; defaults to SPOTFLOOR_BACKFILL_DAYS",
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="load deep history from the provider before rendering",
     )
     parser.add_argument(
         "--skip-poll",
@@ -103,9 +110,9 @@ def main() -> int:
     out.mkdir(parents=True)
 
     config = WebConfig.from_env()
-    # Nothing older than the chart window is ever drawn, so keeping more is dead
-    # weight in the cache. The margin covers a late or skipped run.
-    retain_hours = args.retain_hours or max(2, int(config.history_hours * 1.25))
+    # Retention matches the deepest window anything can ask for. Keeping more is
+    # dead weight in the cache; keeping less would silently truncate the API.
+    retain_days = args.retain_days or config.backfill_days
 
     store = SqliteTimeSeriesStore(config.db_path)
     now = datetime.now(UTC)
@@ -114,6 +121,25 @@ def main() -> int:
         notes: list[str] = []
         if not args.skip_poll:
             providers, notes = build_providers(config)
+
+            # Deep history first, so a cold cache still renders full-depth charts.
+            # AWS retains ~89 days and hands them over on request, so waiting for a
+            # poller to accumulate what we could simply ask for would be perverse.
+            if args.backfill:
+                for provider in providers:
+                    loader = getattr(provider, "history_segments", None)
+                    if loader is None:
+                        continue
+                    segments = loader(days=config.backfill_days)
+                    result = store.backfill(segments)
+                    logger.info(
+                        "backfilled %s: %d segments -> %d new, %d already stored",
+                        provider.name,
+                        len(segments),
+                        result.inserted,
+                        result.skipped,
+                    )
+
             report = run_tick(providers, store, now=now)
             logger.info(
                 "fetched=%s inserted=%d extended=%d failures=%s",
@@ -130,12 +156,18 @@ def main() -> int:
             for name, error in report.failures.items():
                 notes.append(f"{name} could not be reached for this snapshot: {error}")
 
-        removed = store.prune(now - timedelta(hours=retain_hours))
+            # Per-region failures (opt-in regions raise AuthFailure) are the
+            # provider's own notes, and they must reach the page: an absent region
+            # is indistinguishable from a region with no capacity.
+            for provider in providers:
+                notes.extend(getattr(provider, "notes", []))
+
+        removed = store.prune(now - timedelta(days=retain_days))
         if removed:
-            logger.info("pruned %d segments older than %dh", removed, retain_hours)
+            logger.info("pruned %d segments older than %dd", removed, retain_days)
 
         records = store.latest(OfferingFilter(), now=now)
-        gpu_models = sorted({r.offering.gpu_model for r in records})
+        instance_types = sorted({r.offering.instance_type for r in records})
 
         # Notes go through the constructor, not app.state: lifespan startup runs
         # later and resets state, which silently dropped the "AWS is not
@@ -146,7 +178,9 @@ def main() -> int:
             store=store, config=config, poll=False, snapshot=True, notes=notes
         )
 
-        written = asyncio.run(render(app, out, gpu_models, history_hours=config.history_hours))
+        written = asyncio.run(
+            render(app, out, instance_types, history_days=config.history_days)
+        )
     finally:
         store.close()
 
@@ -156,7 +190,8 @@ def main() -> int:
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(
         f"\nwrote {len(written)} files to {out}/ "
-        f"({size / 1024:.0f} KiB, {len(gpu_models)} GPU models, {retain_hours}h retained)"
+        f"({size / 1024:.0f} KiB, {len(instance_types)} instance types, "
+        f"{retain_days}d retained)"
     )
     return 0
 

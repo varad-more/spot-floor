@@ -11,7 +11,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.base import OfferingFilter, TimeRange
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
 
@@ -33,8 +33,8 @@ def offering(
     machine: str = "m1",
     region: str = "Japan, JP",
     score: float | None = 0.99,
-) -> GpuOffering:
-    return GpuOffering(
+) -> InstanceOffering:
+    return InstanceOffering(
         provider="vast",
         external_id=machine,
         instance_type="8xH100_SXM_80GB",

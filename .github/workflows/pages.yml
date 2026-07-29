@@ -1,21 +1,31 @@
 name: Publish snapshot to Pages
 
 # GitHub Pages is a static host, so what gets published is a *snapshot*: a real
-# poll of the providers, rendered to HTML and deployed. The page says so in its
+# read of the AWS spot API, rendered to HTML and deployed. The page says so in its
 # own banner -- a stale page that looks live is exactly the claim this project
 # refuses to make elsewhere.
 #
-# Vast needs no credentials, so this works with zero configuration. AWS prices
-# appear only if AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY are set as repository
-# secrets; without them the page renders Vast-only and states that AWS is not
-# configured rather than showing an empty AWS section, which would read as "no
-# capacity".
+# AWS credentials are required. Set AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY as
+# repository secrets, scoped to a dedicated IAM user with only
+# ec2:DescribeSpotPriceHistory, ec2:DescribeInstanceTypes and ec2:DescribeRegions.
+# Without them the page still deploys and states that AWS is not configured rather
+# than rendering an empty table, which would read as "no capacity".
+#
+# There is deliberately NO database cache. An earlier design kept the SQLite file
+# in the Actions cache so history could span runs, which is necessary when a poller
+# is the only source of history -- a poller cannot retroactively learn yesterday's
+# price. AWS is not that: DescribeSpotPriceHistory retains ~89 days and serves them
+# on request, and a full 30-day rebuild across 17 regions measures ~40s. So each run
+# reconstructs everything it needs from the API, and a 62 MB cache round-trip buys
+# nothing. The database is scratch space inside one job.
 
 on:
   schedule:
-    # Hourly. Note GitHub disables scheduled workflows after 60 days without
-    # repository activity, and cron runs are best-effort under load.
-    - cron: "17 * * * *"
+    # Every 6 hours. The page charts a 7-day window from AWS's own history, so it
+    # is full-depth on every run and does not need frequent polling to look right.
+    # Note GitHub disables scheduled workflows after 60 days without repository
+    # activity, and cron runs are best-effort under load.
+    - cron: "17 */6 * * *"
   push:
     branches: [main]
   workflow_dispatch:
@@ -38,11 +48,11 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     env:
       SPOTFLOOR_DB: spotfloor.db
-      # One bucket per scheduled run: with hourly polling, finer buckets would be
-      # mostly empty and every sparkline would render as disconnected dots.
-      SPOTFLOOR_HISTORY_HOURS: "24"
-      SPOTFLOOR_BUCKETS: "24"
-      SPOTFLOOR_AWS_REGIONS: us-east-1,us-west-2
+      # Regions are left unset so the provider discovers every region the account
+      # has enabled -- a comparator that hardcodes a region list quietly stops
+      # comparing the moment a new one is turned on.
+      SPOTFLOOR_HISTORY_DAYS: "7"
+      SPOTFLOOR_BACKFILL_DAYS: "30"
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       AWS_DEFAULT_REGION: us-east-1
@@ -56,31 +66,11 @@ jobs:
 
       - run: uv sync --frozen
 
-      # The store is working state, not published output: it churns thousands of
-      # segments per poll to render a ~100 KiB page. Keeping it in the cache is
-      # what lets a sparkline span runs without pushing megabytes through Pages.
-      # A cache miss costs history, not correctness -- the run still publishes.
-      - name: Restore price history
-        uses: actions/cache/restore@v4
-        with:
-          path: spotfloor.db
-          key: spotfloor-db-${{ github.run_id }}
-          restore-keys: spotfloor-db-
-
       - name: Verify the deterministic core before publishing anything
         run: uv run pytest -m "not live" -q
 
-      - name: Poll providers and render the snapshot
-        run: uv run python scripts/snapshot.py --out site
-
-      # Cache keys are immutable, so save under a fresh one; restore-keys picks
-      # up the newest on the next run.
-      - name: Save price history
-        uses: actions/cache/save@v4
-        if: always()
-        with:
-          path: spotfloor.db
-          key: spotfloor-db-${{ github.run_id }}
+      - name: Backfill history, poll, and render the snapshot
+        run: uv run python scripts/snapshot.py --out site --backfill
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

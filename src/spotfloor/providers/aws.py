@@ -1,4 +1,4 @@
-"""AWS provider -- pricing-first, and honest about what it cannot know.
+"""AWS spot pricing across regions -- and honest about what it cannot know.
 
 **AWS does not expose spot availability.** The closest thing is the Spot Placement
 Score API, and it is not a market fact: AWS computes the score *against the calling
@@ -15,31 +15,77 @@ enforced by a test, not by a comment.
 The only honest way to give a user a real AWS availability signal is to compute it
 with *their* credentials (``CredsOwner.USER``), which is off by default.
 
-This asymmetry is the whole reason Vast is the availability showcase and AWS is
-the pricing case, and it must be stated in the UI wherever AWS availability would
-otherwise render as blank.
+Consequence for this tool: it is a **price** comparator, not an availability one,
+and the UI must say so wherever a blank availability cell would otherwise read as
+"none available".
+
+---
+
+**Spot price history is a change-log, not a sample series.** AWS emits a row
+precisely when a price changes, and retains ~89 days (measured). Two things follow:
+
+* the deep history a chart needs is one API call away, so charts are full-depth on
+  a cold start instead of waiting for a poller to accumulate; and
+* those rows *are* storage segments -- quote N's timestamp opens a segment and
+  quote N+1's closes it -- so :meth:`AwsProvider.history_segments` feeds
+  ``store.backfill`` directly, with boundaries given rather than inferred.
+
+**Instance specs are global; only availability is regional.** ``m5.large`` has 2
+vCPUs everywhere, so the catalog is fetched once and reused for every region.
+Whether a type is *offered* in a region does vary -- and that needs no extra call,
+because a type absent from a region simply returns no price history there.
 """
 
 from __future__ import annotations
 
 import logging
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Callable, Iterable, Sequence
 
 from spotfloor.gpu import canonical_gpu_model
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
+from spotfloor.storage.base import OfferingRecord
 
 logger = logging.getLogger(__name__)
 
-# describe_spot_price_history is a *history* API: it returns a stream of past
-# quotes, so we pull a short window and reduce to the newest row per (type, AZ).
-_HISTORY_WINDOW = timedelta(hours=3)
+# How far back `fetch` looks to establish the *current* price. Long enough that a
+# quiet instance type still has a quote, short enough to stay cheap.
+_CURRENT_WINDOW = timedelta(hours=6)
 
 # Spot Placement Score is 1..10. Thresholds are deliberately conservative: AWS
 # states the score is a likelihood, never a guarantee of capacity.
 _SPS_AVAILABLE = 8
 _SPS_CONSTRAINED = 4
+
+# Prices are compared at micro-dollar precision, matching the store's state_hash.
+# Anything finer is float noise from JSON round-tripping, not a market move -- and
+# treating noise as a change would shatter every segment into per-quote fragments.
+_PRICE_QUANTUM = 1_000_000
+
+# A bounded watchlist across the families people actually shop between. Bounded on
+# purpose: us-east-1 alone lists 1,354 instance types, and 17 regions x 1,354 types
+# x ~2,000 history rows is ~46M rows and ~57k API calls -- neither pollable on a
+# schedule nor publishable as a static page.
+DEFAULT_INSTANCE_TYPES: tuple[str, ...] = (
+    # GPU / accelerated
+    "p5.48xlarge", "p4d.24xlarge", "g6.xlarge", "g6.12xlarge", "g6e.xlarge",
+    "g5.xlarge", "g5.12xlarge", "g4dn.xlarge",
+    # General purpose (incl. Graviton)
+    "m5.large", "m5.xlarge", "m5.2xlarge", "m6i.large", "m6i.xlarge",
+    "m7i.large", "m7i.xlarge", "m6g.large", "m7g.large", "m7g.xlarge",
+    # Compute optimized
+    "c5.large", "c5.xlarge", "c5.2xlarge", "c6i.large", "c6i.xlarge",
+    "c7i.large", "c7i.xlarge", "c6g.large", "c7g.large", "c7g.xlarge",
+    # Memory optimized
+    "r5.large", "r5.xlarge", "r6i.large", "r6i.xlarge", "r7i.large", "r7g.large",
+    # Burstable
+    "t3.medium", "t3.large", "t4g.medium", "t4g.large",
+    # Storage optimized
+    "i4i.large", "i3.large",
+)
 
 
 class CredsOwner(StrEnum):
@@ -53,64 +99,173 @@ class CredsOwner(StrEnum):
     USER = "user"
 
 
+@dataclass(frozen=True, slots=True)
+class InstanceSpec:
+    """Hardware facts from ``DescribeInstanceTypes``. Global, not per-region."""
+
+    vcpus: int | None
+    memory_gib: float | None
+    gpu_model: str | None
+    gpu_count: int
+
+
 def _instance_family(instance_type: str) -> str:
     """'p5.48xlarge' -> 'p5'; 'p6-b200.48xlarge' -> 'p6-b200'."""
     return instance_type.split(".", 1)[0]
 
 
+def _quantize(price: float) -> int:
+    return round(price * _PRICE_QUANTUM)
+
+
+def _error_code(exc: Exception) -> str:
+    """botocore's error code if there is one, else the exception class name."""
+    response = getattr(exc, "response", None)
+    if isinstance(response, dict):
+        code = response.get("Error", {}).get("Code")
+        if code:
+            return str(code)
+    return type(exc).__name__
+
+
+def _default_client_factory(region: str) -> Any:
+    """One client per region, each from its own Session (thread-safe construction)."""
+    import boto3
+
+    return boto3.session.Session().client("ec2", region_name=region)
+
+
+def enabled_regions(client: Any) -> list[str]:
+    """Regions this account can actually call.
+
+    ``describe_regions`` without ``AllRegions`` returns only enabled ones, which is
+    what we want: this account has 17 opt-in regions it has not enabled, and every
+    one of them would raise ``AuthFailure``. A comparator that lists regions it
+    cannot price is worse than one that admits its scope.
+    """
+    return sorted(r["RegionName"] for r in client.describe_regions()["Regions"])
+
+
 class AwsProvider:
-    """EC2 spot pricing via official APIs. Availability is UNKNOWN unless user-owned."""
+    """EC2 spot pricing across regions. Availability is UNKNOWN unless user-owned."""
 
     name = "aws"
 
     def __init__(
         self,
-        ec2_client: Any,
         *,
+        regions: Sequence[str] | None = None,
+        instance_types: Sequence[str] = DEFAULT_INSTANCE_TYPES,
+        client_factory: Callable[[str], Any] | None = None,
         creds_owner: CredsOwner = CredsOwner.APP,
-        instance_types: tuple[str, ...] | None = None,
+        catalog_region: str = "us-east-1",
+        max_workers: int = 8,
     ) -> None:
-        self._ec2 = ec2_client
+        """``regions=None`` discovers every enabled region on first use.
+
+        ``max_workers`` fans out across regions concurrently. Safe because EC2 API
+        throttles are applied *per region*, so parallel calls to different regions
+        do not contend for one another's token bucket. It is a real speedup, not a
+        micro-optimisation: a 90-day backfill over 17 regions is ~10 minutes serial
+        and well under two in parallel.
+        """
+        self._regions = list(regions) if regions is not None else None
+        self._instance_types = tuple(instance_types)
+        self._client_factory = client_factory or _default_client_factory
         self._creds_owner = creds_owner
-        self._instance_types = instance_types
-        self._catalog: dict[str, tuple[str, int]] | None = None
+        self._catalog_region = catalog_region
+        self._max_workers = max_workers
 
-    def gpu_catalog(self) -> dict[str, tuple[str, int]]:
-        """Map instance type -> (canonical gpu model, gpu count), from the official API.
+        self._clients: dict[str, Any] = {}
+        self._catalog: dict[str, InstanceSpec] | None = None
+        self._failures: dict[str, str] = {}
+        self._scores: dict[str, tuple[Availability, float | None]] = {}
 
-        ``DescribeInstanceTypes`` is authoritative about GPU name, count and VRAM, so
-        the mapping is derived rather than hand-maintained -- a new GPU instance
-        family shows up on its own instead of silently going missing from a static
-        table. AWS omits the interconnect from the GPU name ("H100"), so the instance
-        family supplies it (``p5`` -> SXM); see :func:`canonical_gpu_model`.
+    # --- wiring --------------------------------------------------------------
+
+    def _client(self, region: str) -> Any:
+        if region not in self._clients:
+            self._clients[region] = self._client_factory(region)
+        return self._clients[region]
+
+    def regions(self) -> list[str]:
+        if self._regions is None:
+            self._regions = enabled_regions(self._client(self._catalog_region))
+        return self._regions
+
+    @property
+    def notes(self) -> list[str]:
+        """Human-readable caveats for the page: which regions we could not price.
+
+        A failed region must never just vanish from the table -- an absent region is
+        indistinguishable from a region with no capacity, and those are very
+        different claims.
+        """
+        return [
+            f"{region} could not be priced ({error}), so it is absent from the table."
+            for region, error in sorted(self._failures.items())
+        ]
+
+    # --- catalog -------------------------------------------------------------
+
+    def catalog(self) -> dict[str, InstanceSpec]:
+        """Instance type -> hardware spec, from the official API, fetched once.
+
+        Fetched from a single region because these facts are global: ``m5.large`` is
+        2 vCPU / 8 GiB everywhere. Only *whether a type is offered* varies
+        regionally, and that costs no call -- an unoffered type simply has no price
+        history there.
+
+        ``DescribeInstanceTypes`` is authoritative about GPU name, count and VRAM,
+        so the GPU mapping is derived rather than hand-maintained. AWS omits the
+        interconnect from the GPU name ("H100"), so the instance family supplies it
+        (``p5`` -> SXM); see :func:`spotfloor.gpu.canonical_gpu_model`.
         """
         if self._catalog is not None:
             return self._catalog
 
-        catalog: dict[str, tuple[str, int]] = {}
-        paginator = self._ec2.get_paginator("describe_instance_types")
-        for page in paginator.paginate(
-            Filters=[{"Name": "instance-type", "Values": ["p*", "g*"]}]
-        ):
+        wanted = set(self._instance_types)
+        catalog: dict[str, InstanceSpec] = {}
+        paginator = self._client(self._catalog_region).get_paginator(
+            "describe_instance_types"
+        )
+        for page in paginator.paginate():
             for spec in page["InstanceTypes"]:
-                gpu_info = spec.get("GpuInfo")
-                if not gpu_info:
-                    continue
-                gpu = gpu_info["Gpus"][0]
-                if gpu.get("Manufacturer") != "NVIDIA":
-                    continue
                 instance_type = spec["InstanceType"]
-                catalog[instance_type] = (
-                    canonical_gpu_model(
-                        gpu["Name"],
-                        gpu.get("MemoryInfo", {}).get("SizeInMiB"),
-                        aws_instance_family=_instance_family(instance_type),
-                    ),
-                    gpu["Count"],
-                )
+                if instance_type in wanted:
+                    catalog[instance_type] = self._spec(instance_type, spec)
+
+        missing = wanted - catalog.keys()
+        if missing:
+            logger.warning("aws: not in the instance catalog: %s", sorted(missing))
 
         self._catalog = catalog
         return catalog
+
+    @staticmethod
+    def _spec(instance_type: str, spec: dict[str, Any]) -> InstanceSpec:
+        gpu_model: str | None = None
+        gpu_count = 0
+        gpu_info = spec.get("GpuInfo")
+        if gpu_info and gpu_info.get("Gpus"):
+            gpu = gpu_info["Gpus"][0]
+            if gpu.get("Manufacturer") == "NVIDIA":
+                gpu_count = gpu.get("Count", 0)
+                gpu_model = canonical_gpu_model(
+                    gpu["Name"],
+                    gpu.get("MemoryInfo", {}).get("SizeInMiB"),
+                    aws_instance_family=_instance_family(instance_type),
+                )
+
+        memory_mib = spec.get("MemoryInfo", {}).get("SizeInMiB")
+        return InstanceSpec(
+            vcpus=spec.get("VCpuInfo", {}).get("DefaultVCpus"),
+            memory_gib=round(memory_mib / 1024, 2) if memory_mib else None,
+            gpu_model=gpu_model,
+            gpu_count=gpu_count,
+        )
+
+    # --- availability --------------------------------------------------------
 
     def _availability(self, instance_type: str) -> tuple[Availability, float | None]:
         """Availability, or an honest admission that we cannot know it.
@@ -118,13 +273,27 @@ class AwsProvider:
         With app credentials this returns UNKNOWN *without calling* the
         placement-score API, because a score computed against our account would be a
         statement about our quota, not about the user's odds of getting capacity.
+
+        Memoized per instance type, which is what the call actually varies on. Not an
+        optimisation: this runs once per *offering*, and ``history_segments`` builds
+        ~172k of them, so an unmemoized USER-credential run would fire six figures of
+        API calls to ask the same few questions.
         """
         if self._creds_owner is CredsOwner.APP:
             return Availability.UNKNOWN, None
 
-        # User-owned credentials: the score is now genuinely about them.
+        if instance_type in self._scores:
+            return self._scores[instance_type]
+
+        result = self._fetch_placement_score(instance_type)
+        self._scores[instance_type] = result
+        return result
+
+    def _fetch_placement_score(
+        self, instance_type: str
+    ) -> tuple[Availability, float | None]:
         try:
-            response = self._ec2.get_spot_placement_scores(
+            response = self._client(self._catalog_region).get_spot_placement_scores(
                 InstanceTypes=[instance_type],
                 TargetCapacity=1,
                 TargetCapacityUnitType="units",
@@ -147,50 +316,170 @@ class AwsProvider:
             availability = Availability.UNAVAILABLE
         return availability, best / 10
 
-    def fetch(self) -> list[GpuOffering]:
-        """Return the most recent spot quote per (instance type, availability zone)."""
-        observed_at = datetime.now(UTC)
-        catalog = self.gpu_catalog()
-        instance_types = list(self._instance_types or catalog)
+    # --- raw quotes ----------------------------------------------------------
 
-        # Reduce the history stream to the newest quote per (type, AZ).
-        newest: dict[tuple[str, str], dict[str, Any]] = {}
-        paginator = self._ec2.get_paginator("describe_spot_price_history")
+    def _quotes(self, region: str, start: datetime) -> list[dict[str, Any]]:
+        """Every spot quote in ``region`` since ``start``, for the watchlist.
+
+        One paginated call covers the whole watchlist: ``InstanceTypes`` takes a
+        list, so this is O(regions) API round-trips rather than O(regions x types).
+        Types not offered in the region simply return nothing.
+        """
+        quotes: list[dict[str, Any]] = []
+        paginator = self._client(region).get_paginator("describe_spot_price_history")
         for page in paginator.paginate(
-            InstanceTypes=instance_types,
+            InstanceTypes=list(self._instance_types),
             ProductDescriptions=["Linux/UNIX"],
-            StartTime=observed_at - _HISTORY_WINDOW,
+            StartTime=start,
         ):
-            for quote in page["SpotPriceHistory"]:
+            quotes.extend(page["SpotPriceHistory"])
+        return quotes
+
+    def _per_region(self, start: datetime) -> dict[str, list[dict[str, Any]]]:
+        """Fan out across regions, recording failures instead of raising.
+
+        One unreachable region must not take the other sixteen down with it. Opt-in
+        regions the account has not enabled raise ``AuthFailure`` here, which is an
+        expected path rather than a bug -- but it is *reported*, via :attr:`notes`.
+        """
+        self._failures = {}
+        results: dict[str, list[dict[str, Any]]] = {}
+
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+            futures = {
+                pool.submit(self._quotes, region, start): region
+                for region in self.regions()
+            }
+            for future, region in futures.items():
+                try:
+                    results[region] = future.result()
+                except Exception as exc:  # noqa: BLE001 - one region must not fail the rest
+                    logger.warning("aws: region %s failed: %s", region, exc)
+                    self._failures[region] = _error_code(exc)
+        return results
+
+    def _offering(
+        self,
+        quote: dict[str, Any],
+        region: str,
+        spec: InstanceSpec,
+        *,
+        price: float,
+        observed_at: datetime,
+    ) -> InstanceOffering:
+        availability, score = self._availability(quote["InstanceType"])
+        return InstanceOffering(
+            provider=self.name,
+            instance_type=quote["InstanceType"],
+            region=region,
+            # The AZ verbatim, alongside its region. Zones within one region are
+            # separately priced, which is the whole reason both fields exist.
+            zone=quote["AvailabilityZone"],
+            price_usd_hr=price,
+            price_kind=PriceKind.SPOT,
+            availability=availability,
+            availability_score=score,
+            observed_at=observed_at,
+            gpu_model=spec.gpu_model,
+            gpu_count=spec.gpu_count,
+            vcpus=spec.vcpus,
+            memory_gib=spec.memory_gib,
+        )
+
+    # --- the two read paths --------------------------------------------------
+
+    def fetch(self) -> list[InstanceOffering]:
+        """The current spot price per (instance type, zone) across all regions."""
+        observed_at = datetime.now(UTC)
+        catalog = self.catalog()
+        offerings: list[InstanceOffering] = []
+
+        for region, quotes in self._per_region(observed_at - _CURRENT_WINDOW).items():
+            newest: dict[tuple[str, str], dict[str, Any]] = {}
+            for quote in quotes:
                 key = (quote["InstanceType"], quote["AvailabilityZone"])
                 incumbent = newest.get(key)
                 if incumbent is None or quote["Timestamp"] > incumbent["Timestamp"]:
                     newest[key] = quote
 
-        offerings: list[GpuOffering] = []
-        for (instance_type, az), quote in newest.items():
-            spec = catalog.get(instance_type)
-            if spec is None:
-                # Unknown silicon is dropped, never guessed at.
-                logger.warning("aws: %s is not in the GPU catalog; dropping", instance_type)
-                continue
-
-            gpu_model, gpu_count = spec
-            availability, score = self._availability(instance_type)
-            offerings.append(
-                GpuOffering(
-                    provider=self.name,
-                    instance_type=instance_type,
-                    gpu_model=gpu_model,
-                    gpu_count=gpu_count,
-                    # The AZ verbatim. Provider-native: 'us-east-1a' is not
-                    # comparable to Vast's 'Japan, JP' and we do not pretend it is.
-                    region=az,
-                    price_usd_hr=float(quote["SpotPrice"]),
-                    price_kind=PriceKind.SPOT,
-                    availability=availability,
-                    availability_score=score,
-                    observed_at=observed_at,
+            for (instance_type, _zone), quote in newest.items():
+                spec = catalog.get(instance_type)
+                if spec is None:
+                    # Unknown silicon is dropped, never guessed at.
+                    continue
+                price = float(quote["SpotPrice"])
+                if price <= 0:
+                    continue
+                offerings.append(
+                    self._offering(
+                        quote, region, spec, price=price, observed_at=observed_at
+                    )
                 )
-            )
         return offerings
+
+    def history_segments(self, *, days: int = 30) -> list[OfferingRecord]:
+        """Deep history as storage segments, ready for ``store.backfill``.
+
+        AWS emits a quote when a price *changes*, so consecutive quotes bound an
+        interval over which that price held: quote N opens a segment, quote N+1
+        closes it, and the newest stays open until ``now``. No bucketing, no
+        interpolation -- the intervals are the ones AWS published.
+
+        Equal consecutive prices are coalesced, because AWS does re-emit an
+        unchanged price and two touching segments at one price are one segment.
+        Coalescing here rather than in the store is deliberate: only the caller
+        knows whether adjacent intervals are contiguous.
+        """
+        now = datetime.now(UTC)
+        catalog = self.catalog()
+        segments: list[OfferingRecord] = []
+
+        for region, quotes in self._per_region(now - timedelta(days=days)).items():
+            series: dict[tuple[str, str], list[dict[str, Any]]] = {}
+            for quote in quotes:
+                key = (quote["InstanceType"], quote["AvailabilityZone"])
+                series.setdefault(key, []).append(quote)
+
+            for (instance_type, _zone), group in series.items():
+                spec = catalog.get(instance_type)
+                if spec is None:
+                    continue
+                segments.extend(self._segments_for_series(group, region, spec, now=now))
+        return segments
+
+    def _segments_for_series(
+        self,
+        quotes: list[dict[str, Any]],
+        region: str,
+        spec: InstanceSpec,
+        *,
+        now: datetime,
+    ) -> Iterable[OfferingRecord]:
+        """Turn one (type, zone) quote stream into closed segments."""
+        ordered = sorted(quotes, key=lambda q: q["Timestamp"])
+
+        # Keep only quotes where the price actually changed; each one is a boundary.
+        boundaries: list[tuple[datetime, float]] = []
+        for quote in ordered:
+            price = float(quote["SpotPrice"])
+            if price <= 0:
+                continue
+            if boundaries and _quantize(boundaries[-1][1]) == _quantize(price):
+                continue
+            boundaries.append((quote["Timestamp"], price))
+
+        for index, (start, price) in enumerate(boundaries):
+            end = boundaries[index + 1][0] if index + 1 < len(boundaries) else now
+            yield OfferingRecord(
+                offering=self._offering(
+                    ordered[0],
+                    region,
+                    spec,
+                    price=price,
+                    # A historical segment was observed over its own interval; the
+                    # wall clock is not when this price was true.
+                    observed_at=end,
+                ),
+                first_seen=start,
+                last_seen=end,
+            )

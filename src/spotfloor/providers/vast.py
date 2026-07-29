@@ -40,7 +40,7 @@ from typing import Any
 import httpx
 
 from spotfloor.gpu import canonical_gpu_model
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 
 logger = logging.getLogger(__name__)
 
@@ -162,7 +162,9 @@ class VastProvider:
             )
         return offers
 
-    def normalize(self, offer: dict[str, Any], observed_at: datetime) -> list[GpuOffering]:
+    def normalize(
+        self, offer: dict[str, Any], observed_at: datetime
+    ) -> list[InstanceOffering]:
         """Expand one Vast machine into its on-demand and interruptible offerings."""
         gpu_count = offer.get("num_gpus") or 0
         machine_id = offer.get("machine_id")
@@ -193,13 +195,16 @@ class VastProvider:
             if not price or price <= 0:
                 continue
             offerings.append(
-                GpuOffering(
+                InstanceOffering(
                     provider=self.name,
                     external_id=str(machine_id),
                     instance_type=f"{gpu_count}x{gpu_model}",
                     gpu_model=gpu_model,
                     gpu_count=gpu_count,
                     region=region,
+                    # Vast sells a free-text geolocation with no sub-region concept;
+                    # inventing a zone to fill the column would be fake precision.
+                    zone=None,
                     price_usd_hr=float(price),
                     price_kind=price_kind,
                     availability=derive_availability(offer, price_kind),
@@ -212,7 +217,7 @@ class VastProvider:
             )
         return offerings
 
-    def fetch(self) -> list[GpuOffering]:
+    def fetch(self) -> list[InstanceOffering]:
         """Return every machine currently listed for the watchlisted GPU models."""
         observed_at = datetime.now(UTC)
 
@@ -226,7 +231,7 @@ class VastProvider:
                     if machine_id is not None:
                         machines[machine_id] = offer
 
-        offerings: list[GpuOffering] = []
+        offerings: list[InstanceOffering] = []
         for offer in machines.values():
             offerings.extend(self.normalize(offer, observed_at))
         return offerings

@@ -25,7 +25,7 @@ from spotfloor.alerts.rules import (
     RuleState,
     RuleStatus,
 )
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.base import OfferingRecord
 
 THRESHOLD = 12.0
@@ -63,7 +63,7 @@ def record(
     provider: str = "vast",
     gpu_count: int = 8,
 ) -> OfferingRecord:
-    offering = GpuOffering(
+    offering = InstanceOffering(
         provider=provider,
         instance_type=f"{gpu_count}xH100_SXM_80GB",
         gpu_model="H100_SXM_80GB",

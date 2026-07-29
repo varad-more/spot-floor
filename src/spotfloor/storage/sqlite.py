@@ -6,10 +6,22 @@ observation extends the open segment; a change opens a new one. So the table gro
 with *change*, not with time, and "when did it change" is answered by reading a row
 rather than by diffing a point series.
 
+That model was chosen for polling, and it turns out to be exactly the shape AWS
+publishes history in: ``DescribeSpotPriceHistory`` emits a row when the price
+*changes*, so a 90-day backfill is a stream of segments whose boundaries are given
+rather than inferred. Hence two write paths -- :meth:`~SqliteTimeSeriesStore.write`
+for "this is the state now" and :meth:`~SqliteTimeSeriesStore.backfill` for "this
+interval is already known".
+
 **Floats are never compared with ``=``.** Prices arrive as JSON floats and
 ``0.9950001`` is not ``0.995``, so a naive equality check would open a new segment
 on every poll and destroy dedup. Change detection runs on ``state_hash``, computed
 from integer-quantized values, making it exact.
+
+**The database is a cache, not a system of record.** Every row is re-derivable from
+AWS on demand (~89 days of retention, measured), so a schema change drops and
+rebuilds rather than migrating. ``SCHEMA_VERSION`` enforces that: opening a file
+written by an older layout recreates it instead of failing on a missing column.
 
 Timestamps are stored as epoch integers rather than ISO text: window arithmetic
 becomes plain integer math that ports to DuckDB unchanged.
@@ -17,18 +29,24 @@ becomes plain integer math that ports to DuckDB unchanged.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import threading
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.base import (
     OfferingFilter,
     OfferingRecord,
     TimeRange,
     WriteResult,
 )
+
+logger = logging.getLogger(__name__)
+
+# Bump on ANY change to the layout below. The store rebuilds rather than migrates.
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS offering_observation (
@@ -38,12 +56,16 @@ CREATE TABLE IF NOT EXISTS offering_observation (
     provider           TEXT    NOT NULL,
     external_id        TEXT,
     instance_type      TEXT    NOT NULL,
-    gpu_model          TEXT    NOT NULL,
-    gpu_count          INTEGER NOT NULL,
+    instance_family    TEXT    NOT NULL,
     region             TEXT    NOT NULL,
+    zone               TEXT,
+    gpu_model          TEXT,
+    gpu_count          INTEGER NOT NULL DEFAULT 0,
+    vcpus              INTEGER,
+    memory_gib         REAL,
     price_kind         TEXT    NOT NULL,
     price_usd_hr       REAL    NOT NULL,
-    price_per_gpu_hr   REAL    NOT NULL,
+    price_per_gpu_hr   REAL,
     availability       TEXT    NOT NULL,
     availability_score REAL,
     first_seen         INTEGER NOT NULL,
@@ -52,7 +74,15 @@ CREATE TABLE IF NOT EXISTS offering_observation (
 CREATE INDEX IF NOT EXISTS ix_series_lastseen
     ON offering_observation(series_key, last_seen DESC, id DESC);
 CREATE INDEX IF NOT EXISTS ix_lookup
-    ON offering_observation(gpu_model, gpu_count, price_kind, last_seen DESC);
+    ON offering_observation(instance_type, region, price_kind, last_seen DESC);
+CREATE INDEX IF NOT EXISTS ix_window
+    ON offering_observation(last_seen, first_seen);
+
+-- A series cannot have two segments starting at the same instant. That is a real
+-- invariant of the segment model, and it is what makes `backfill` idempotent:
+-- re-inserting an interval already stored is an ignored conflict, not a duplicate.
+CREATE UNIQUE INDEX IF NOT EXISTS ux_segment_start
+    ON offering_observation(series_key, first_seen);
 """
 
 
@@ -64,7 +94,7 @@ def _dt(epoch: int) -> datetime:
     return datetime.fromtimestamp(epoch, tz=UTC)
 
 
-def state_hash(offering: GpuOffering) -> str:
+def state_hash(offering: InstanceOffering) -> str:
     """Exact identity of an offering's *mutable state*, immune to float jitter.
 
     Quantizing before hashing is what makes "did this change?" a decidable
@@ -107,7 +137,7 @@ class SqliteTimeSeriesStore:
         self._conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.executescript(_SCHEMA)
+        self._ensure_schema()
         self._gap_ttl_s = gap_ttl_s
         self._max_span_s = max_span_s
         self._freshness_ttl_s = freshness_ttl_s
@@ -117,9 +147,34 @@ class SqliteTimeSeriesStore:
         # read the same segment and both insert. Serialize the whole decision.
         self._write_lock = threading.Lock()
 
+    def _ensure_schema(self) -> None:
+        """Create the schema, rebuilding it if the file predates ``SCHEMA_VERSION``.
+
+        Rebuild rather than migrate, because every row here is re-derivable from
+        ``DescribeSpotPriceHistory`` (~89 days of retention). Writing migration
+        scripts for a cache would be effort spent protecting data that costs one
+        API call to reproduce -- and a half-migrated cache is worse than an empty
+        one, because it silently serves rows the new code misreads.
+        """
+        found = self._conn.execute("PRAGMA user_version").fetchone()[0]
+        has_table = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='offering_observation'"
+        ).fetchone()
+
+        if has_table and found != SCHEMA_VERSION:
+            logger.warning(
+                "store schema v%s != v%s; rebuilding (contents are a cache, not a record)",
+                found,
+                SCHEMA_VERSION,
+            )
+            self._conn.execute("DROP TABLE offering_observation")
+
+        self._conn.executescript(_SCHEMA)
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
     # --- write ---------------------------------------------------------------
 
-    def write(self, offerings: Sequence[GpuOffering], *, now: datetime) -> WriteResult:
+    def write(self, offerings: Sequence[InstanceOffering], *, now: datetime) -> WriteResult:
         """Extend open segments where nothing changed; open new ones where it did."""
         ts = _epoch(now)
         inserted = extended = skipped = 0
@@ -127,7 +182,7 @@ class SqliteTimeSeriesStore:
         # Two machines can collide on a series key within one batch (e.g. the same
         # host returned by both sort orders). Resolve deterministically to the
         # cheapest, so a tick is idempotent rather than order-dependent.
-        batch: dict[str, GpuOffering] = {}
+        batch: dict[str, InstanceOffering] = {}
         for offering in offerings:
             incumbent = batch.get(offering.series_key)
             if incumbent is None or offering.price_usd_hr < incumbent.price_usd_hr:
@@ -165,7 +220,7 @@ class SqliteTimeSeriesStore:
 
         return WriteResult(inserted=inserted, extended=extended, skipped=skipped)
 
-    def _extends(self, current: sqlite3.Row, offering: GpuOffering, ts: int) -> bool:
+    def _extends(self, current: sqlite3.Row, offering: InstanceOffering, ts: int) -> bool:
         """True when this observation continues the open segment rather than starting one."""
         return (
             current["state_hash"] == state_hash(offering)
@@ -173,34 +228,79 @@ class SqliteTimeSeriesStore:
             and ts - current["first_seen"] <= self._max_span_s
         )
 
-    def _insert(self, offering: GpuOffering, ts: int) -> None:
-        self._conn.execute(
-            """
-            INSERT INTO offering_observation (
-                series_key, state_hash, provider, external_id, instance_type,
-                gpu_model, gpu_count, region, price_kind, price_usd_hr,
-                price_per_gpu_hr, availability, availability_score,
-                first_seen, last_seen
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                offering.series_key,
-                state_hash(offering),
-                offering.provider,
-                offering.external_id,
-                offering.instance_type,
-                offering.gpu_model,
-                offering.gpu_count,
-                offering.region,
-                str(offering.price_kind),
-                offering.price_usd_hr,
-                offering.price_per_gpu_hr,
-                str(offering.availability),
-                offering.availability_score,
-                ts,
-                ts,
-            ),
+    _INSERT = """
+        INSERT {conflict} INTO offering_observation (
+            series_key, state_hash, provider, external_id, instance_type,
+            instance_family, region, zone, gpu_model, gpu_count, vcpus,
+            memory_gib, price_kind, price_usd_hr, price_per_gpu_hr,
+            availability, availability_score, first_seen, last_seen
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+    """
+
+    @staticmethod
+    def _insert_params(
+        offering: InstanceOffering, first_seen: int, last_seen: int
+    ) -> tuple[Any, ...]:
+        return (
+            offering.series_key,
+            state_hash(offering),
+            offering.provider,
+            offering.external_id,
+            offering.instance_type,
+            offering.instance_family,
+            offering.region,
+            offering.zone,
+            offering.gpu_model,
+            offering.gpu_count,
+            offering.vcpus,
+            offering.memory_gib,
+            str(offering.price_kind),
+            offering.price_usd_hr,
+            offering.price_per_gpu_hr,
+            str(offering.availability),
+            offering.availability_score,
+            first_seen,
+            last_seen,
         )
+
+    def _insert(self, offering: InstanceOffering, ts: int) -> None:
+        self._conn.execute(
+            self._INSERT.format(conflict=""), self._insert_params(offering, ts, ts)
+        )
+
+    def backfill(self, segments: Sequence[OfferingRecord]) -> WriteResult:
+        """Insert segments whose intervals are already known. See the protocol docstring.
+
+        ``INSERT OR IGNORE`` against ``ux_segment_start`` is what makes this
+        idempotent: a re-run over an interval already stored collides on
+        ``(series_key, first_seen)`` and is counted as skipped. That matters
+        operationally, because the database is a rebuildable cache -- a lost CI
+        cache means backfilling the same 90 days again, and that must not
+        double-count or duplicate rows.
+
+        Segments are *not* merged with adjacent stored ones. A caller assembling a
+        history stream is responsible for coalescing equal consecutive prices before
+        it gets here (:meth:`spotfloor.providers.aws.AwsProvider.history_segments`
+        does), because only the caller knows whether two intervals are contiguous or
+        separated by a gap it never observed.
+        """
+        inserted = skipped = 0
+        with self._write_lock, self._conn:
+            for segment in segments:
+                first = _epoch(segment.first_seen)
+                last = _epoch(segment.last_seen)
+                if last < first:
+                    skipped += 1
+                    continue
+                cursor = self._conn.execute(
+                    self._INSERT.format(conflict="OR IGNORE"),
+                    self._insert_params(segment.offering, first, last),
+                )
+                if cursor.rowcount:
+                    inserted += 1
+                else:
+                    skipped += 1
+        return WriteResult(inserted=inserted, skipped=skipped)
 
     # --- read ----------------------------------------------------------------
 
@@ -222,7 +322,7 @@ class SqliteTimeSeriesStore:
                   FROM offering_observation
                  WHERE last_seen >= ? {where}
             ) WHERE rn = 1
-            ORDER BY price_per_gpu_hr ASC
+            ORDER BY price_usd_hr ASC
             """,
             (cutoff, *params),
         ).fetchall()
@@ -271,27 +371,39 @@ class SqliteTimeSeriesStore:
         params: list[Any] = []
         for column, value in (
             ("provider", filt.provider),
+            ("instance_type", filt.instance_type),
+            ("instance_family", filt.instance_family),
             ("gpu_model", filt.gpu_model),
             ("gpu_count", filt.gpu_count),
             ("region", filt.region),
+            ("zone", filt.zone),
             ("price_kind", None if filt.price_kind is None else str(filt.price_kind)),
             ("availability", None if filt.availability is None else str(filt.availability)),
         ):
             if value is not None:
                 clauses.append(f"AND {column} = ?")
                 params.append(value)
+
+        # Compared against 0 rather than tested for NULL: `gpu_count` is NOT NULL
+        # with a 0 default, because "has no GPU" is a fact and not missing data.
+        if filt.has_gpu is not None:
+            clauses.append("AND gpu_count > 0" if filt.has_gpu else "AND gpu_count = 0")
+
         return " ".join(clauses), params
 
     @staticmethod
     def _record(row: sqlite3.Row) -> OfferingRecord:
         return OfferingRecord(
-            offering=GpuOffering(
+            offering=InstanceOffering(
                 provider=row["provider"],
                 external_id=row["external_id"],
                 instance_type=row["instance_type"],
+                region=row["region"],
+                zone=row["zone"],
                 gpu_model=row["gpu_model"],
                 gpu_count=row["gpu_count"],
-                region=row["region"],
+                vcpus=row["vcpus"],
+                memory_gib=row["memory_gib"],
                 price_usd_hr=row["price_usd_hr"],
                 price_kind=PriceKind(row["price_kind"]),
                 availability=Availability(row["availability"]),

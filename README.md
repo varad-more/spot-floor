@@ -1,197 +1,212 @@
 # spotfloor
 
-Cross-cloud GPU spot price **and availability** tracker with threshold alerting.
-Tells you when a target GPU node is cheap *and actually obtainable*.
-
-Price is the easy part — anyone can chart it. The hard part, and the reason this
-exists, is **fulfillment**: can I get an 8×H100 node right now, and will I keep it?
-
-Status: **Phases 0–2 complete** (provider normalization, time-series ingestion,
-hysteresis alert engine), plus a read-only web dashboard. Gates 0, 1 and 2 pass
-against live provider APIs.
+**AWS EC2 spot price tracker and cross-region comparator.** Any instance family, all
+enabled regions, with real price history — and it names the availability zone behind
+every number, because you launch into a zone, not into a region.
 
 ```bash
-uv run python scripts/serve.py     # http://127.0.0.1:8000
+uv sync
+uv run python scripts/serve.py --backfill    # http://127.0.0.1:8000
 ```
+
+Status: **AWS-only price comparator.** 153 offline tests; gates 0, 1 and 2 pass
+against live APIs.
 
 ---
 
-## The availability signal is not equally honest across providers
+## The one number that justifies the whole design
 
-This is the first thing to know about this product, and it is stated here rather
-than buried:
+Rolling a region's zones up to a single price is the obvious thing for a table to
+do. Here is what it hides, measured live and verified against the raw AWS API:
 
-| Provider | Price | Availability | Why |
-|---|---|---|---|
-| **Vast.ai** | live | **live, real** | Publishes real per-machine inventory. `rentable` is a fact. |
-| **AWS** | live | **`unknown`** | AWS does not expose spot availability. See below. |
+| Instance | Region | Cheapest AZ | Dearest AZ | Spread |
+|---|---|---|---|---|
+| `g6.12xlarge` | ca-central-1 | **$1.1336** (1b) | $5.1093 (1d) | **+350.7%** |
+| `g6e.xlarge` | ap-south-1 | $0.5482 (1a) | $2.2352 (1b) | +307.7% |
+| `p4d.24xlarge` | eu-west-2 | $7.0745 (2b) | $28.5488 (2a) | +303.5% |
+| `p5.48xlarge` | ap-south-1 | $6.6048 (1c) | $20.2923 (1b) | +207.2% |
 
-**AWS cannot tell us whether you can get capacity.** The closest thing is the Spot
-Placement Score API — and it does not return a market fact. AWS computes the score
-*against the calling account's* quotas, limits and usage history. Measured live from
-this repo's account, `p5.48xlarge` scored **1/10 in every availability zone**. That
-number describes our account, not your odds.
+A 4.5× price difference **inside one region**. A regional average would be
+actively misleading, and a bare regional minimum would be a number you cannot act
+on. So every row names its zone and states the spread it hid.
 
-So a placement score fetched with the application's credentials is not merely
-imprecise — it is **about the wrong account**. Publishing it as a market signal would
-be fabrication. spotfloor therefore reports `availability: unknown` for AWS and *does
-not even call the placement-score API* under app credentials. That is enforced by a
-test (`test_app_creds_never_call_the_placement_score_api`), not by a comment.
+The cross-region spread is just as real: `p5.48xlarge` (8×H100) is $6.60/hr in
+ap-south-1 and $20.76/hr in us-east-1 — the same hardware, 3× the price.
 
-The only honest way to get a real AWS availability signal is to compute it with
-**your own** credentials. That path exists (`CredsOwner.USER`) and is off by default.
+---
 
-Consequence, by design: **an AWS offering can never satisfy an availability-gated
-alert rule.** `unknown` is not `obtainable`. That is correct behaviour, not a gap.
+## What this tool does not know
 
-AWS is the pricing case. Vast is the availability showcase.
+**AWS does not publish spot availability.** Every availability cell reads
+`unknown`, deliberately, as a word rather than a blank — a blank cell reads as
+"none available", which is a claim we have not earned.
+
+The nearest thing AWS offers is the Spot Placement Score API, and it does not
+return a market fact: AWS computes the score *against the calling account's* quotas
+and usage history. Measured live from this repo's account, `p5.48xlarge` scored
+**1/10 in every availability zone**. That number describes our account, not your
+odds. So a score fetched with the app's credentials is not merely imprecise, it is
+**about the wrong account** — and publishing it as a market signal would be
+fabrication.
+
+spotfloor therefore reports `unknown` and **does not call that API at all** under
+app credentials. Enforced by a test
+(`test_app_creds_never_call_the_placement_score_api`), not by a comment. The only
+honest path to a real AWS availability signal is to compute it with *your own*
+credentials (`CredsOwner.USER`), which is off by default.
+
+**This is a price comparator. It does not claim to know what you can get.**
+
+### Price volatility is not availability either
+
+The page shows how many times each price moved in the window, plus a scale-free
+coefficient of variation. That is a real fact from AWS's published history and a
+fair hint that a zone is contended — `m5.large` in us-west-2 moved 74 times in
+seven days. It is **not** a fulfillment probability and is never presented as one.
 
 ---
 
 ## Design decisions worth arguing about
 
-**GPU models are normalized. Regions are not.** A chip is a chip: Vast's `"H100 SXM"`
-and AWS's `"H100"` on a `p5` are the same silicon, so both resolve to the canonical
-SKU `H100_SXM_80GB` and their prices are genuinely comparable. A datacenter is *not*
-fungible: Vast's `"Japan, JP"` is not AWS's `us-east-1a`, and there is no honest
-mapping between them. Region stays provider-native and is never compared across
-providers. Inventing a cross-provider region taxonomy would be fake precision.
+**Spot price history is a change-log, not a sample series.** AWS emits a row
+precisely *when a price changes*, and retains ~89 days (measured: 89 days,
+~2,000 rows per instance-type/region, 2–3 API calls, under a second). Two
+consequences:
 
-VRAM disambiguates real SKU splits — an `A100` ships as both 40GB and 80GB at
-materially different prices — and is bucketed rather than trusted verbatim, because
-AWS reports a 24GB L4 as `22888 MiB`.
+* charts are full-depth on a cold start, because deep history is one call away
+  rather than something a poller must slowly accumulate; and
+* those rows **are** storage segments — quote N's timestamp opens a segment and
+  quote N+1's closes it — so the backfill is exact rather than a reconstruction.
+  Gate 1 proves it: 466 adjacent segment pairs, every one meeting exactly.
 
-**Price is stored per node, compared per GPU.** `price_usd_hr` is the whole-node rate,
-because that is what a provider actually bills. `price_per_gpu_hr` is derived.
+That is why there are two write paths. `write(now=…)` is told "this is the state
+now" and infers boundaries; `backfill(segments)` is handed intervals already known.
+Routing history through `write` would stamp 90 days of dated quotes with the wall
+clock and collapse them into one segment.
 
-**A single Vast query cannot see the spot floor.** The search endpoint returns a
-server-side *slice* whose membership depends on the sort order — not merely a
-truncation. Measured live on RTX 4090: sorting by `dph_total` reported a spot floor of
-`$0.1200/GPU/hr` when the true floor was `$0.1067`, an **11% overstatement**, because
-15 machines with cheaper bids were absent from the price-sorted slice entirely. Both
-slices were under the result cap. spotfloor therefore queries once per sort key and
-unions by `machine_id`. In a product named spotfloor, this is the one bias that cannot
-ship.
+**The database is a rebuildable cache, not a system of record.** Every row is
+re-derivable from one API call, so a schema change drops and rebuilds rather than
+migrating — a half-migrated cache is worse than an empty one, because it serves
+rows the new code misreads.
 
-**Vast's `min_bid` is quoted per node** — verified, not assumed. If it were per-GPU,
-`dph_total / min_bid` would scale with node size; measured across live listings it is
-flat (RTX 4090: 1.09 at 1 GPU, 1.05 at 8). Getting this backwards would misprice every
-multi-GPU spot quote by up to 8×.
+**Region and zone are separate fields.** A region comparator cannot key on a field
+that secretly holds an AZ. Rolling up is a read-time decision, and the roll-up
+always names the zone that produced the number.
 
-**Storage is segments, not points.** A row says "this exact (price, availability) held
-from `first_seen` to `last_seen`", so the table grows with *change*, not with time, and
-"when did it change" is a row you read rather than a diff you reconstruct. Change
-detection hashes integer-quantized values — comparing JSON floats with `=` would open a
-new row on every poll and silently destroy dedup.
+**`instance_type` is the spine, not GPU SKU.** Only 69 of us-east-1's 1,354
+instance types carry a GPU. Within one provider `m5.large` is already canonical —
+it is the same 2 vCPU / 8 GiB machine in every region — so prices are directly
+comparable with no normalization. Cross-provider SKU mapping (`gpu.py`) is
+retained as *enrichment* for the GPU rows; it was load-bearing only when comparing
+Vast against AWS.
 
-**Absence is never rendered as a value.** A series that goes stale is *not observed*,
-which is a different claim from "unavailable". No tombstones, nothing fabricated.
+**The watchlist is bounded, on purpose.** 17 regions × 1,354 types × ~2,000 history
+rows is ~46M rows and ~57k API calls — neither pollable on a schedule nor
+publishable as a static page. The default watchlist is 40 types across GPU,
+general-purpose, compute, memory, burstable and storage families.
+
+**Regions are discovered, not hardcoded.** `describe_regions` returns the 17 this
+account has enabled; the other 17 are opt-in and would raise `AuthFailure` on every
+call. A comparator that lists regions it cannot price is worse than one that admits
+its scope — and any region that *does* fail is named on the page, because an absent
+region is indistinguishable from a region with no capacity.
+
+**Storage is segments, not points.** A row says "this exact (price, availability)
+held from `first_seen` to `last_seen`", so the table grows with *change*, not with
+time. Change detection hashes integer-quantized values — comparing JSON floats with
+`=` would open a new row on every poll and silently destroy dedup.
+
+**Absence is never rendered as a value.** An unobserved bucket is `None`: not zero,
+not the previous price carried forward. Interpolating across a gap asserts an
+observation we never made.
+
+---
+
+## The dashboard
+
+A read-only page over the store: one row per (instance type, region), the cheapest
+zone named, the intra-region spread, hardware spec, volatility, and a 7-day
+sparkline. Filtering, search and column sort run **client-side** over rows already
+in the document — so "pick what you want to see" works on a static host with no
+server, no framework and no CDN.
+
+**A page load never fetches from AWS.** It renders what the poller and backfill
+already stored, so API quota is tied to the schedule rather than to traffic, and
+the table and charts are two views of one set of stored facts instead of two
+fetches that can disagree. Enforced by a test that wires in a provider which raises
+if called.
+
+```
+GET /                           the page
+GET /api/market                 current rows as JSON
+GET /api/history/{instance_type} bucketed price series (?region=&days=&buckets=)
+```
+
+The page charts 7 days while the store holds 30. That is deliberate: 646 rows × 30
+days is over a million segments to load and bucket per render. Deeper history stays
+available per instance type through `?days=N`, which filters to one series and is
+cheap.
+
+### The hosted page is a snapshot, and says so
+
+GitHub Pages is a static host: it cannot run the poller, the store, or FastAPI.
+What is published there is a **snapshot** — a scheduled job backfills history, runs
+a real poll, renders the page, and deploys it every 6 hours.
+
+```bash
+uv run python scripts/snapshot.py --out site --backfill
+```
+
+The renderer drives the real app over ASGI rather than re-rendering, so the static
+files are literally the responses the live app gives. There is no second rendering
+path to drift, and the first thing to drift would be a caveat.
+
+Snapshot mode is explicit, not inferred: the page drops its auto-refresh and carries
+a banner naming when the prices were read. **A stale page that looks live is the
+same unearned claim as an availability we cannot observe**, so tests assert both
+that a snapshot says it is one and that the live page does not.
+
+**There is no database cache in CI**, and that is a deliberate deletion. An earlier
+design kept the SQLite file in the Actions cache so sparklines could span runs —
+necessary when a poller is the only source of history, because a poller cannot
+retroactively learn yesterday's price. AWS is not that. A full 30-day rebuild across
+17 regions measures **~43 seconds** and produces 172k segments, so each run
+reconstructs everything from the API and a 62 MB cache round-trip buys nothing.
+
+The workflow needs `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` as repository
+secrets, scoped to a dedicated IAM user with only `ec2:DescribeSpotPriceHistory`,
+`ec2:DescribeInstanceTypes` and `ec2:DescribeRegions`. Without them the page still
+deploys and states that AWS is not configured rather than rendering an empty table.
+Note that GitHub disables scheduled workflows after 60 days without repository
+activity.
 
 ---
 
 ## The alert engine
 
-The correctness problem: a price sitting at its floor jitters across the threshold on
-every poll. A naive threshold check mails you every time.
+Present, proven, and **not yet wired to the pipeline** — `run_tick` fetches and
+persists; nothing calls `evaluate()`, and `RuleState` is not persisted.
 
-Every rule reduces to one scalar — **the floor price among offerings that actually
-qualify** (matching the filters, and obtainable if the rule demands it). That single
-reduction lets *one* state machine handle both failure modes: when a machine flips
-`available → constrained` it drops out of the qualifying set, so availability flapping
-*is* a metric change, and the deadband that stops price spam stops availability spam
-too.
+The correctness problem it solves: a price sitting at its floor jitters across the
+threshold on every poll, and a naive threshold check mails you every time. Every
+rule reduces to one scalar — the floor price among offerings that qualify — so one
+state machine covers both price and availability flapping. A rule that fires at
+`price ≤ T` re-arms only once price clears `T × (1 + margin)`, after N consecutive
+confirmations. Between them is a dead zone where nothing is emitted.
 
-A rule that fires at `price ≤ T` does not re-arm at `price > T`. It re-arms only once
-price clears `T × (1 + margin)`, and only after N consecutive confirmations. Between
-`T` and that bound is a dead zone where **nothing is emitted**.
-
-On a 207-tick series that straddles the threshold 200 times:
+On a 207-tick series straddling the threshold 200 times:
 
 ```
 spotfloor (hysteresis):   2 alerts
 naive threshold check : 112 alerts
 ```
 
-A rule parked *exactly* on its threshold fires **once, ever** — firing is inclusive
-(`≤ T`), re-arming requires strictly more than `T`. A zero-deadband rule is rejected at
-construction, because it would flap forever.
-
-`step()` is a pure function — no I/O, no clock, no database — which is what makes the
-gate provable: the oscillation test drives 200 ticks through the real state machine
-with nothing mocked.
+`step()` is pure — no I/O, no clock, no database — which is what makes the gate
+provable. A zero-deadband rule is rejected at construction, because it would flap
+forever.
 
 **No LLM touches ingestion, normalization or alert evaluation.** That constraint is
 architectural, so it is also a test (`test_no_llm_in_the_critical_path`).
-
----
-
-## The dashboard
-
-A read-only page over the store: current prices per GPU model and provider, with
-a sparkline of the floor over the last N hours.
-
-**A page load never fetches from a provider.** It renders what the poller already
-stored, so provider rate limits are tied to the poll interval rather than to
-traffic, and the table and the chart are two views of one set of stored facts
-instead of two fetches that can disagree. That is enforced by a test that wires in
-a provider which raises if called.
-
-The three ways a GPU dashboard normally lies, and what this one does instead:
-
-| Temptation | What this page does |
-|---|---|
-| Leave AWS's availability cell blank | Renders an explicit `unknown` in an outlined pill, with the reason stated above the table. A blank cell reads as "none available", which is a claim we have not earned. |
-| Sort AWS and Vast rows together by region | Rows group by **GPU model**; region stays provider-native and is labelled as such. AWS regions *are* compared against each other — that is a real market comparison. |
-| Interpolate a chart across missing data | A bucket with no observation is a **break in the line**, never zero and never the previous price carried forward. |
-
-Two price columns, because they answer different questions: *cheapest observed* is
-what a price tracker shows, and *cheapest obtainable* is what you could actually
-rent. For AWS the second is always `unknown` — which is the entire thesis rendered
-as a table cell.
-
-Charts are server-rendered inline SVG: no CDN, no charting library, and the
-drawing is a pure function you can assert on.
-
-```
-GET /                        the page
-GET /api/market              current rows as JSON
-GET /api/history/{gpu_model} bucketed floor series (?provider=&hours=&buckets=)
-```
-
-Set `SPOTFLOOR_AWS_REGIONS=us-east-1,us-west-2,eu-west-1` to compare AWS against
-itself across regions. Vast needs no credentials; without AWS credentials the app
-still runs and says so on the page rather than showing an empty AWS section.
-
-### The hosted page is a snapshot, and says so
-
-GitHub Pages is a static host: it cannot run the poller, the store, or FastAPI.
-What is published there is a **snapshot** — a scheduled job runs a real poll,
-renders the page, and deploys the result hourly.
-
-```bash
-uv run python scripts/snapshot.py --out site
-```
-
-The renderer drives the real app over ASGI rather than re-rendering, so the static
-files are literally the responses the live app gives; there is no second rendering
-path to drift, and the first thing to drift would be a caveat.
-
-Snapshot mode is explicit, not inferred. The page drops its auto-refresh and
-carries a banner naming the time the prices were read — **a stale page that looks
-live is the same unearned claim as an availability we cannot observe**, so tests
-assert both that a snapshot says it is one and that the live page does not.
-
-The database is working state, not published output: it churns thousands of
-segments per poll to render a ~100 KiB page, so CI keeps it in the Actions cache
-rather than deploying it, and retention is tied to the chart window because
-nothing older is ever drawn. A cache miss costs history, not correctness.
-
-The workflow needs no configuration — Vast requires no credentials. AWS prices
-appear only if `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set as
-repository secrets; without them the page renders Vast-only and says AWS is not
-configured, rather than showing an empty AWS section that would read as "no
-capacity". Note that GitHub disables scheduled workflows after 60 days without
-repository activity.
 
 ---
 
@@ -199,16 +214,16 @@ repository activity.
 
 ```
 src/spotfloor/
-  models.py            GpuOffering, PriceKind, Availability, series identity
-  gpu.py               canonical cross-provider GPU SKU vocabulary
-  query.py             read model: market_table(), floor_series() -- pure
+  models.py            InstanceOffering, PriceKind, Availability, series identity
+  gpu.py               GPU SKU vocabulary (enrichment for the GPU rows)
+  query.py             read model: region_table(), volatility(), floor_series() -- pure
   providers/
     base.py            Provider protocol
-    vast.py            live inventory; the documented availability rule
-    aws.py             spot pricing; availability = unknown, by construction
+    aws.py             region fan-out, history-as-segments, availability = unknown
+    vast.py            live inventory (kept, no longer wired -- see below)
   storage/
     base.py            TimeSeriesStore protocol (the DuckDB seam)
-    sqlite.py          segment storage + dedup
+    sqlite.py          segment storage, dedup, backfill, schema guard
   ingest/
     pipeline.py        one tick: fetch -> persist
     poller.py          scheduled polling
@@ -218,12 +233,17 @@ src/spotfloor/
   web/
     app.py             FastAPI routes; read-only
     sparkline.py       inline SVG; gaps stay gaps
-    templates/         the page
+    templates/         the page, with client-side filtering
 ```
 
 Business logic depends only on the storage *protocol*, never on SQL — so a
 DuckDB/Parquet backend can replace SQLite for range queries without the pipeline,
 evaluator or API noticing.
+
+The Vast provider and its tests are **kept but unwired**. It is the only provider
+that can answer "can I actually get this", and it documents the asymmetry that
+makes AWS's `unknown` honest rather than lazy. Re-wiring it is a one-line change in
+`build_providers`.
 
 ---
 
@@ -232,26 +252,32 @@ evaluator or API noticing.
 ```bash
 uv sync
 
-uv run python scripts/serve.py    # the dashboard on http://127.0.0.1:8000
+uv run python scripts/serve.py --backfill   # dashboard, full-depth charts
+uv run python scripts/serve.py              # faster start, charts fill in per poll
 
-uv run pytest                     # full suite (includes the live provider gates)
+uv run pytest                     # full suite (includes live gates)
 uv run pytest -m "not live"       # offline only
 
-uv run python scripts/gate0.py    # availability rule + live normalized offerings
-uv run python scripts/gate1.py    # 3 live poll cycles, dedup, AWS honesty
+uv run python scripts/gate0.py    # Vast availability rule + live normalized offerings
+uv run python scripts/gate1.py    # region fan-out, dedup, backfill-as-segments, AWS honesty
 uv run python scripts/gate2.py    # hysteresis vs. a naive evaluator
 ```
 
-The AWS gates need credentials with `ec2:DescribeSpotPriceHistory` and
-`ec2:DescribeInstanceTypes`. Vast needs none — its search API is public.
+Environment: `SPOTFLOOR_DB`, `SPOTFLOOR_REGIONS` (unset = every enabled region),
+`SPOTFLOOR_INSTANCE_TYPES`, `SPOTFLOOR_POLL_INTERVAL_S`, `SPOTFLOOR_HISTORY_DAYS`,
+`SPOTFLOOR_BACKFILL_DAYS`, `SPOTFLOOR_BUCKETS`, `SPOTFLOOR_PORT`.
 
-`scripts/serve.py` reads `SPOTFLOOR_DB`, `SPOTFLOOR_AWS_REGIONS`,
-`SPOTFLOOR_AWS_INSTANCE_TYPES`, `SPOTFLOOR_POLL_INTERVAL_S`,
-`SPOTFLOOR_HISTORY_HOURS` and `SPOTFLOOR_PORT`.
+AWS credentials need `ec2:DescribeSpotPriceHistory`, `ec2:DescribeInstanceTypes`
+and `ec2:DescribeRegions`. All three are free, read-only calls.
 
-## Not built yet
+## Not built
 
-Phases 3–6: notification delivery (email/Slack), auth and per-user rules, Stripe
-tiers, deploy. The dashboard is read-only and unauthenticated — it shows the
-market, not an account. The provider, storage and alert interfaces are in place
-for the rest.
+- **Arbitrary instance selection** across all 1,354 types needs a live backend;
+  Pages is static, so the watchlist is operator-configured and the browser filters
+  what was fetched.
+- **On-demand prices** — a different API. Only spot (`Linux/UNIX`) is shown.
+- Alert delivery (email/Slack), auth, per-user rules, billing. The provider,
+  storage and alert interfaces are in place for the rest.
+- `floor_series` buckets in Python over segments fetched for the whole window. Fine
+  at this row count; a range aggregate pushed into SQL is the move when the window
+  gets long.

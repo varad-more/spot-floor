@@ -15,7 +15,7 @@ import pytest
 from spotfloor.alerts.evaluator import evaluate
 from spotfloor.alerts.rules import AlertRule, EventKind, RuleState, RuleStatus
 from spotfloor.ingest.pipeline import run_tick
-from spotfloor.models import Availability, GpuOffering, PriceKind
+from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.base import OfferingFilter, TimeRange
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
 
@@ -30,10 +30,10 @@ class FakeProvider:
     def __init__(self, prices: list[float]) -> None:
         self._prices = list(prices)
 
-    def fetch(self) -> list[GpuOffering]:
+    def fetch(self) -> list[InstanceOffering]:
         price = self._prices.pop(0)
         return [
-            GpuOffering(
+            InstanceOffering(
                 provider="vast",
                 external_id="m1",
                 instance_type="8xH100_SXM_80GB",

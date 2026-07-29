@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {% if not snapshot %}<meta http-equiv="refresh" content="60">{% endif %}
-<title>spotfloor — GPU price &amp; availability</title>
+<title>spotfloor — AWS spot prices by region</title>
 <style>
   :root {
     --bg: #fbfbfa; --panel: #fff; --ink: #1a1a1a; --muted: #6b6b6b;
@@ -30,9 +30,9 @@
     font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  .wrap { max-width: 1320px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
   header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
-  header p.lede { margin: .4rem 0 0; color: var(--muted); max-width: 60ch; }
+  header p.lede { margin: .4rem 0 0; color: var(--muted); max-width: 64ch; }
   .meta { margin-top: .75rem; font-size: .82rem; color: var(--muted); }
   .meta code { background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: .1em .4em; }
@@ -47,6 +47,25 @@
   .callout p { margin: 0; }
   .callout p + p { margin-top: .5rem; }
 
+  /* --- controls: this is the "user selects what they want" surface. Filtering
+       is client-side over rows already in the page, so it works on a static
+       host with no server and no network round-trip. --- */
+  .controls {
+    display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
+    margin: 1.5rem 0 .75rem;
+  }
+  .controls input[type=search], .controls select {
+    font: inherit; font-size: .875rem; padding: .4rem .6rem;
+    background: var(--panel); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 6px;
+  }
+  .controls input[type=search] { min-width: 15rem; flex: 1 1 15rem; }
+  .controls label.check {
+    font-size: .85rem; color: var(--muted); display: flex;
+    align-items: center; gap: .35rem; cursor: pointer;
+  }
+  #count { font-size: .82rem; color: var(--muted); margin-left: auto; }
+
   .tablecard {
     background: var(--panel); border: 1px solid var(--line);
     border-radius: 8px; overflow-x: auto;
@@ -58,18 +77,22 @@
     text-transform: uppercase; color: var(--muted);
     padding: .7rem .8rem; border-bottom: 1px solid var(--line); white-space: nowrap;
   }
-  tbody td { padding: .6rem .8rem; border-bottom: 1px solid var(--line);
+  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable:hover { color: var(--ink); }
+  thead th .arrow { opacity: .45; font-size: .8em; }
+  tbody td { padding: .55rem .8rem; border-bottom: 1px solid var(--line);
     vertical-align: middle; white-space: nowrap; }
   tbody tr:last-child td { border-bottom: none; }
-  tr.group td {
-    background: color-mix(in srgb, var(--ink) 4%, transparent);
-    font-weight: 600; font-size: .8rem; letter-spacing: .02em;
-    padding: .45rem .8rem; color: var(--ink);
-  }
+  tbody tr.hidden { display: none; }
   .num { font-variant-numeric: tabular-nums; text-align: right; }
   .price { font-weight: 600; font-variant-numeric: tabular-nums; }
   .dim { color: var(--muted); }
-  .prov { font-weight: 600; }
+  .type { font-weight: 600; }
+  .zone { font-size: .8rem; }
+
+  /* Spread is evidence that the regional roll-up was lossy. Loud when it is big. */
+  .spread-hi { color: var(--bad-fg); font-weight: 600; }
+  .spread-mid { color: var(--warn-fg); }
 
   .pill {
     display: inline-block; padding: .12em .5em; border-radius: 999px;
@@ -88,7 +111,6 @@
   .spark { display: block; color: var(--accent); }
   .spark-empty { opacity: .3; }
   .sparkcell { width: 180px; }
-  .sparknote { font-size: .68rem; color: var(--muted); margin-top: .1rem; }
 
   footer { margin-top: 2rem; font-size: .82rem; color: var(--muted); }
   footer ul { padding-left: 1.1rem; margin: .5rem 0 0; }
@@ -102,14 +124,15 @@
   <header>
     <h1>spotfloor</h1>
     <p class="lede">
-      Live GPU spot prices <em>and availability</em>, normalized across providers.
-      Price is the easy part — the question this answers is whether you can
-      actually get the node.
+      AWS EC2 spot prices compared <em>across regions</em>, with {{ config.history_days }}-day
+      history. Every price names the availability zone it came from, because you
+      launch into a zone — not into a region.
     </p>
     <p class="meta">
       Observed {{ generated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC ·
-      history window {{ config.history_hours }}h ·
-      providers: {{ providers_seen | join(', ') if providers_seen else 'none yet' }} ·
+      {{ entries | length }} rows ·
+      {{ regions_seen | length }} regions ·
+      history window {{ config.history_days }}d ·
       {% if snapshot %}static snapshot{% else %}page refreshes every 60s{% endif %}
     </p>
   </header>
@@ -122,82 +145,116 @@
     treat every number here as “what was true then”, not “what is true now”.
     Nothing on this page updates by itself.</p>
     <p>For live data, run it yourself — <code>uv run python scripts/serve.py</code> —
-    which polls on an interval against the same providers.</p>
+    which polls on an interval against the same API.</p>
   </div>
   {% endif %}
 
-  {% if aws_present %}
   <div class="callout">
-    <p><strong>AWS availability is <code>unknown</code>, and that is the honest answer.</strong>
-    AWS does not publish spot availability. The nearest thing, Spot Placement Score,
-    is computed against <em>the calling account's</em> quota and history — so a score
-    fetched with this app's credentials describes this account, not your odds of
-    getting capacity. spotfloor does not call that API under app credentials and
-    reports <code>unknown</code> rather than inventing a number.</p>
-    <p>Vast.ai publishes real per-machine inventory, so its availability column is a
-    fact. That asymmetry is a property of the providers, not a gap in this page.</p>
+    <p><strong>This is a price comparator, not an availability one.</strong>
+    AWS does not publish spot availability, so every availability cell below reads
+    <code>unknown</code> — deliberately, as a word rather than a blank. The nearest
+    thing AWS offers, Spot Placement Score, is computed against <em>the calling
+    account's</em> quota and history, so a score fetched with this app's credentials
+    describes this account and not your odds of getting capacity. spotfloor does not
+    call that API under app credentials and reports <code>unknown</code> rather than
+    inventing a number.</p>
+    <p><strong>“Price moves” is not availability either.</strong> It counts how many
+    times the price changed in the window — a real fact from AWS's published history,
+    and a fair hint that a zone is contended. It is not a fulfillment probability and
+    is not presented as one.</p>
   </div>
-  {% endif %}
 
   {% for note in notes %}
   <div class="callout warn"><p>{{ note }}</p></div>
   {% endfor %}
 
+  {% if entries %}
+  <div class="controls">
+    <input type="search" id="q" placeholder="Filter by instance type, family, region or zone…"
+           autocomplete="off" aria-label="Filter rows">
+    <select id="family" aria-label="Instance family">
+      <option value="">All families</option>
+      {% for family in families_seen %}<option value="{{ family }}">{{ family }}</option>{% endfor %}
+    </select>
+    <select id="region" aria-label="Region">
+      <option value="">All regions</option>
+      {% for region in regions_seen %}<option value="{{ region }}">{{ region }}</option>{% endfor %}
+    </select>
+    <label class="check"><input type="checkbox" id="gpuonly"> GPU only</label>
+    <span id="count"></span>
+  </div>
+  {% endif %}
+
   <div class="tablecard">
     {% if entries %}
-    <table>
+    <table id="grid">
       <thead>
         <tr>
-          <th>Provider</th>
-          <th>Kind</th>
-          <th class="num">Cheapest $/GPU·hr</th>
-          <th class="num">Cheapest obtainable</th>
-          <th>Cheapest node</th>
-          <th>Region <span class="dim">(provider-native)</span></th>
-          <th>Availability</th>
-          <th class="num">Obtainable supply</th>
-          <th class="sparkcell">Floor, last {{ config.history_hours }}h</th>
+          <th class="sortable" data-key="type">Instance <span class="arrow">↕</span></th>
+          <th class="sortable" data-key="region">Region <span class="arrow">↕</span></th>
+          <th class="num sortable" data-key="price">$/hr <span class="arrow">↑</span></th>
+          <th>Cheapest zone</th>
+          <th class="num sortable" data-key="spread">AZ spread <span class="arrow">↕</span></th>
+          <th class="num">Spec</th>
+          <th class="num sortable" data-key="pergpu">$/GPU·hr <span class="arrow">↕</span></th>
+          <th>Avail.</th>
+          <th class="num sortable" data-key="moves">Price moves <span class="arrow">↕</span></th>
+          <th class="sparkcell">Last {{ config.history_days }}d</th>
         </tr>
       </thead>
       <tbody>
-      {% for gpu_model, group in entries | groupby('row.gpu_model') %}
-        <tr class="group"><td colspan="9">{{ gpu_model }}</td></tr>
-        {% for e in group %}
-        <tr>
-          <td class="prov">{{ e.row.provider }}</td>
-          <td class="dim">{{ e.row.price_kind }}</td>
-          <td class="num price">${{ '%.4f' % e.row.cheapest_per_gpu_hr }}</td>
+      {% for e in entries %}
+        <tr data-type="{{ e.row.instance_type }}"
+            data-family="{{ e.row.instance_family }}"
+            data-region="{{ e.row.region }}"
+            data-zone="{{ e.row.cheapest_zone }}"
+            data-gpu="{{ 1 if e.row.gpu_count else 0 }}"
+            data-price="{{ e.row.cheapest_usd_hr }}"
+            data-spread="{{ '%.4f' % e.row.spread_pct }}"
+            data-pergpu="{{ e.row.cheapest_per_gpu_hr if e.row.cheapest_per_gpu_hr is not none else -1 }}"
+            data-moves="{{ e.row.price_changes if e.row.price_changes is not none else -1 }}">
+          <td class="type">{{ e.row.instance_type }}</td>
+          <td>{{ e.row.region }}</td>
+          <td class="num price">${{ '%.4f' % e.row.cheapest_usd_hr }}</td>
+          <td class="zone dim">{{ e.row.cheapest_zone }}
+            <span class="dim">({{ e.row.zone_count }} AZ{{ '' if e.row.zone_count == 1 else 's' }})</span>
+          </td>
           <td class="num">
-            {% if e.row.cheapest_obtainable_per_gpu_hr is not none %}
-              <span class="price">${{ '%.4f' % e.row.cheapest_obtainable_per_gpu_hr }}</span>
-            {% elif not e.row.availability_known %}
-              <span class="dim" title="This provider does not expose availability.">unknown</span>
+            {% if e.row.zone_count < 2 %}
+              <span class="dim" title="Only one zone observed; nothing to compare.">—</span>
             {% else %}
-              <span class="dim" title="Listed, but nothing is obtainable right now.">none</span>
+              <span class="{% if e.row.spread_pct >= 25 %}spread-hi{% elif e.row.spread_pct >= 8 %}spread-mid{% endif %}"
+                    title="Dearest zone {{ e.row.dearest_zone }} at ${{ '%.4f' % e.row.dearest_usd_hr }}/hr">
+                +{{ '%.1f' % e.row.spread_pct }}%
+              </span>
             {% endif %}
           </td>
-          <td class="dim">{{ e.row.cheapest_gpu_count }}× @ ${{ '%.2f' % e.row.cheapest_price_usd_hr }}/hr</td>
-          <td class="dim">{{ e.row.cheapest_region }}</td>
-          <td><span class="pill {{ e.row.cheapest_availability }}">{{ e.row.cheapest_availability }}</span></td>
+          <td class="num dim">
+            {{ e.row.vcpus if e.row.vcpus else '?' }} vCPU
+            {%- if e.row.memory_gib %} · {{ '%g' % e.row.memory_gib }} GiB{% endif %}
+            {%- if e.row.gpu_count %} · {{ e.row.gpu_count }}× {{ e.row.gpu_model }}{% endif %}
+          </td>
           <td class="num">
-            {% if e.row.availability_known %}
-              {{ e.row.obtainable_nodes }} <span class="dim">/ {{ e.row.node_count }}</span>
+            {% if e.row.cheapest_per_gpu_hr is not none %}
+              <span class="price">${{ '%.4f' % e.row.cheapest_per_gpu_hr }}</span>
             {% else %}
-              <span class="dim">unknown ({{ e.row.node_count }} listed)</span>
+              <span class="dim" title="This instance type has no GPU.">—</span>
             {% endif %}
           </td>
-          <td class="sparkcell">
-            {{ e.spark | safe }}
-            <div class="sparknote">
-              {% if e.observed_buckets %}
-                {{ e.observed_buckets }}/{{ e.series | length }} buckets observed
-              {% else %}
-                not yet observed
+          <td><span class="pill {{ e.row.availability }}">{{ e.row.availability }}</span></td>
+          <td class="num">
+            {% if e.row.price_changes is none %}
+              <span class="dim" title="No history in the window; not computed.">n/a</span>
+            {% else %}
+              {{ e.row.price_changes }}
+              {%- if e.row.coefficient_of_variation is not none %}
+                <span class="dim" title="Coefficient of variation over the window">
+                  ({{ '%.0f' % (e.row.coefficient_of_variation * 100) }}%)</span>
               {% endif %}
-            </div>
+            {% endif %}
           </td>
+          <td class="sparkcell">{{ e.spark | safe }}</td>
         </tr>
-        {% endfor %}
       {% endfor %}
       </tbody>
     </table>
@@ -211,25 +268,102 @@
 
   <footer>
     <ul>
-      <li><strong>“Cheapest observed”, never “cheapest that exists.”</strong> Vast's
-      search API returns a server-side slice, so this is the floor across what we
-      actually saw.</li>
-      <li><strong>GPU models are compared across providers; regions are not.</strong>
-      A chip is a chip, so an AWS <code>H100_SXM_80GB</code> and a Vast one are the
-      same silicon at comparable prices. A datacenter is not fungible: Vast's
-      “Japan, JP” is not <code>us-east-1a</code>, and no mapping between them is
-      invented. AWS regions <em>are</em> comparable to each other.</li>
+      <li><strong>A region row names its zone.</strong> AWS prices spot per
+      availability zone, and zones inside one region differ. The price shown is the
+      cheapest zone in that region, and the <em>AZ spread</em> column states how much
+      the roll-up hid — a big spread means the regional number alone is not
+      actionable.</li>
+      <li><strong>Instance types are compared across regions, and that is honest.</strong>
+      <code>m5.large</code> is the same 2 vCPU / 8 GiB machine in every region, so
+      the prices are directly comparable. No SKU normalization is needed or done.</li>
       <li><strong>Gaps in a sparkline are gaps.</strong> A bucket with no observation
-      is drawn as a break, not interpolated — not observed is a different claim
-      from unavailable.</li>
-      <li>Prices are per node (<code>$/hr</code>); the comparison axis is per GPU
-      (<code>$/GPU·hr</code>). JSON:
+      is drawn as a break, not interpolated — <em>not observed</em> is a different
+      claim from <em>unavailable</em>.</li>
+      <li><strong>Spot prices only</strong> (<code>Linux/UNIX</code>), per instance,
+      per hour. On-demand rates are a different API and are not shown. The watchlist
+      is {{ config.instance_types | length }} instance types — bounded on purpose,
+      because us-east-1 alone lists 1,354.</li>
+      <li>JSON:
       {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>,
-      <code>api/history/{gpu_model}.json</code>{% else %}<code>/api/market</code>,
-      <code>/api/history/{gpu_model}</code>{% endif %}.</li>
+      <code>api/history/{instance_type}.json</code>{% else %}<code>/api/market</code>,
+      <code>/api/history/{instance_type}</code>{% endif %}.</li>
     </ul>
   </footer>
 
 </div>
+
+{% if entries %}
+<script>
+// Filtering and sorting run over the rows already in the document. No fetch, no
+// framework, no CDN -- the page must work as a static file, and a strict CSP on
+// the host forbids external scripts anyway.
+(function () {
+  var table = document.getElementById('grid');
+  var tbody = table.tBodies[0];
+  var rows = Array.prototype.slice.call(tbody.rows);
+  var q = document.getElementById('q');
+  var family = document.getElementById('family');
+  var region = document.getElementById('region');
+  var gpuonly = document.getElementById('gpuonly');
+  var count = document.getElementById('count');
+  var sortKey = 'price', sortDir = 1;
+
+  function haystack(row) {
+    var d = row.dataset;
+    return (d.type + ' ' + d.family + ' ' + d.region + ' ' + d.zone).toLowerCase();
+  }
+
+  function apply() {
+    var term = q.value.trim().toLowerCase();
+    var fam = family.value, reg = region.value, gpu = gpuonly.checked;
+    var shown = 0;
+
+    rows.forEach(function (row) {
+      var d = row.dataset;
+      var ok = (!term || haystack(row).indexOf(term) !== -1)
+            && (!fam || d.family === fam)
+            && (!reg || d.region === reg)
+            && (!gpu || d.gpu === '1');
+      row.classList.toggle('hidden', !ok);
+      if (ok) shown++;
+    });
+
+    count.textContent = shown === rows.length
+      ? rows.length + ' rows'
+      : shown + ' of ' + rows.length + ' rows';
+  }
+
+  function sort(key) {
+    if (sortKey === key) { sortDir = -sortDir; } else { sortKey = key; sortDir = 1; }
+    var numeric = key !== 'type' && key !== 'region';
+
+    rows.sort(function (a, b) {
+      var x = a.dataset[key], y = b.dataset[key];
+      if (numeric) { return (parseFloat(x) - parseFloat(y)) * sortDir; }
+      return x.localeCompare(y) * sortDir;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+
+    Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
+      var arrow = th.querySelector('.arrow');
+      if (!arrow) { return; }
+      arrow.textContent = th.dataset.key === sortKey ? (sortDir > 0 ? '↑' : '↓') : '↕';
+    });
+  }
+
+  [q, family, region, gpuonly].forEach(function (el) {
+    el.addEventListener('input', apply);
+    el.addEventListener('change', apply);
+  });
+  Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
+    if (th.dataset.key) {
+      th.addEventListener('click', function () { sort(th.dataset.key); });
+    }
+  });
+
+  apply();
+})();
+</script>
+{% endif %}
 </body>
 </html>

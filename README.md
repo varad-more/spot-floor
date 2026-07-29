@@ -7,7 +7,12 @@ Price is the easy part — anyone can chart it. The hard part, and the reason th
 exists, is **fulfillment**: can I get an 8×H100 node right now, and will I keep it?
 
 Status: **Phases 0–2 complete** (provider normalization, time-series ingestion,
-hysteresis alert engine). Gates 0, 1 and 2 pass against live provider APIs.
+hysteresis alert engine), plus a read-only web dashboard. Gates 0, 1 and 2 pass
+against live provider APIs.
+
+```bash
+uv run python scripts/serve.py     # http://127.0.0.1:8000
+```
 
 ---
 
@@ -120,12 +125,52 @@ architectural, so it is also a test (`test_no_llm_in_the_critical_path`).
 
 ---
 
+## The dashboard
+
+A read-only page over the store: current prices per GPU model and provider, with
+a sparkline of the floor over the last N hours.
+
+**A page load never fetches from a provider.** It renders what the poller already
+stored, so provider rate limits are tied to the poll interval rather than to
+traffic, and the table and the chart are two views of one set of stored facts
+instead of two fetches that can disagree. That is enforced by a test that wires in
+a provider which raises if called.
+
+The three ways a GPU dashboard normally lies, and what this one does instead:
+
+| Temptation | What this page does |
+|---|---|
+| Leave AWS's availability cell blank | Renders an explicit `unknown` in an outlined pill, with the reason stated above the table. A blank cell reads as "none available", which is a claim we have not earned. |
+| Sort AWS and Vast rows together by region | Rows group by **GPU model**; region stays provider-native and is labelled as such. AWS regions *are* compared against each other — that is a real market comparison. |
+| Interpolate a chart across missing data | A bucket with no observation is a **break in the line**, never zero and never the previous price carried forward. |
+
+Two price columns, because they answer different questions: *cheapest observed* is
+what a price tracker shows, and *cheapest obtainable* is what you could actually
+rent. For AWS the second is always `unknown` — which is the entire thesis rendered
+as a table cell.
+
+Charts are server-rendered inline SVG: no CDN, no charting library, and the
+drawing is a pure function you can assert on.
+
+```
+GET /                        the page
+GET /api/market              current rows as JSON
+GET /api/history/{gpu_model} bucketed floor series (?provider=&hours=&buckets=)
+```
+
+Set `SPOTFLOOR_AWS_REGIONS=us-east-1,us-west-2,eu-west-1` to compare AWS against
+itself across regions. Vast needs no credentials; without AWS credentials the app
+still runs and says so on the page rather than showing an empty AWS section.
+
+---
+
 ## Layout
 
 ```
 src/spotfloor/
   models.py            GpuOffering, PriceKind, Availability, series identity
   gpu.py               canonical cross-provider GPU SKU vocabulary
+  query.py             read model: market_table(), floor_series() -- pure
   providers/
     base.py            Provider protocol
     vast.py            live inventory; the documented availability rule
@@ -139,6 +184,10 @@ src/spotfloor/
   alerts/
     rules.py           AlertRule, RuleState
     evaluator.py       pure step(); hysteresis
+  web/
+    app.py             FastAPI routes; read-only
+    sparkline.py       inline SVG; gaps stay gaps
+    templates/         the page
 ```
 
 Business logic depends only on the storage *protocol*, never on SQL — so a
@@ -152,6 +201,8 @@ evaluator or API noticing.
 ```bash
 uv sync
 
+uv run python scripts/serve.py    # the dashboard on http://127.0.0.1:8000
+
 uv run pytest                     # full suite (includes the live provider gates)
 uv run pytest -m "not live"       # offline only
 
@@ -163,7 +214,13 @@ uv run python scripts/gate2.py    # hysteresis vs. a naive evaluator
 The AWS gates need credentials with `ec2:DescribeSpotPriceHistory` and
 `ec2:DescribeInstanceTypes`. Vast needs none — its search API is public.
 
+`scripts/serve.py` reads `SPOTFLOOR_DB`, `SPOTFLOOR_AWS_REGIONS`,
+`SPOTFLOOR_AWS_INSTANCE_TYPES`, `SPOTFLOOR_POLL_INTERVAL_S`,
+`SPOTFLOOR_HISTORY_HOURS` and `SPOTFLOOR_PORT`.
+
 ## Not built yet
 
-Phases 3–6: notification delivery (email/Slack), auth + dashboard, Stripe tiers,
-deploy. The provider, storage and alert interfaces are in place for them.
+Phases 3–6: notification delivery (email/Slack), auth and per-user rules, Stripe
+tiers, deploy. The dashboard is read-only and unauthenticated — it shows the
+market, not an account. The provider, storage and alert interfaces are in place
+for the rest.

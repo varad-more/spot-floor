@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>spotfloor — GPU price &amp; availability</title>
+<style>
+  :root {
+    --bg: #fbfbfa; --panel: #fff; --ink: #1a1a1a; --muted: #6b6b6b;
+    --line: #e5e4e1; --accent: #2f6f4f;
+    --ok-bg: #e7f4ec; --ok-fg: #1f6b41;
+    --warn-bg: #fdf1dd; --warn-fg: #8a5a10;
+    --bad-bg: #fdeaea; --bad-fg: #9b2c2c;
+    --unk-bg: transparent; --unk-fg: #6b6b6b; --unk-line: #b9b8b4;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16171a; --panel: #1d1f23; --ink: #e9e8e6; --muted: #9a9a97;
+      --line: #2e3136; --accent: #7bc39a;
+      --ok-bg: #17301f; --ok-fg: #7bc39a;
+      --warn-bg: #33260f; --warn-fg: #e0b263;
+      --bad-bg: #351b1b; --bad-fg: #e08c8c;
+      --unk-bg: transparent; --unk-fg: #9a9a97; --unk-line: #4a4d52;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
+  header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
+  header p.lede { margin: .4rem 0 0; color: var(--muted); max-width: 60ch; }
+  .meta { margin-top: .75rem; font-size: .82rem; color: var(--muted); }
+  .meta code { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: .1em .4em; }
+
+  .callout {
+    margin: 1.75rem 0; padding: .9rem 1.1rem; background: var(--panel);
+    border: 1px solid var(--line); border-left: 3px solid var(--accent);
+    border-radius: 6px; font-size: .9rem;
+  }
+  .callout strong { font-weight: 600; }
+  .callout.warn { border-left-color: #d08a2c; }
+  .callout p { margin: 0; }
+  .callout p + p { margin-top: .5rem; }
+
+  .tablecard {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; overflow-x: auto;
+  }
+  table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  thead th {
+    position: sticky; top: 0; background: var(--panel); text-align: left;
+    font-weight: 600; font-size: .74rem; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--muted);
+    padding: .7rem .8rem; border-bottom: 1px solid var(--line); white-space: nowrap;
+  }
+  tbody td { padding: .6rem .8rem; border-bottom: 1px solid var(--line);
+    vertical-align: middle; white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: none; }
+  tr.group td {
+    background: color-mix(in srgb, var(--ink) 4%, transparent);
+    font-weight: 600; font-size: .8rem; letter-spacing: .02em;
+    padding: .45rem .8rem; color: var(--ink);
+  }
+  .num { font-variant-numeric: tabular-nums; text-align: right; }
+  .price { font-weight: 600; font-variant-numeric: tabular-nums; }
+  .dim { color: var(--muted); }
+  .prov { font-weight: 600; }
+
+  .pill {
+    display: inline-block; padding: .12em .5em; border-radius: 999px;
+    font-size: .74rem; font-weight: 600; letter-spacing: .01em;
+  }
+  .pill.available   { background: var(--ok-bg);   color: var(--ok-fg); }
+  .pill.constrained { background: var(--warn-bg); color: var(--warn-fg); }
+  .pill.unavailable { background: var(--bad-bg);  color: var(--bad-fg); }
+  /* `unknown` is deliberately styled as an absence -- outlined, not filled --
+     so it never reads as a quiet "no capacity". */
+  .pill.unknown {
+    background: var(--unk-bg); color: var(--unk-fg);
+    border: 1px dashed var(--unk-line); font-weight: 500;
+  }
+
+  .spark { display: block; color: var(--accent); }
+  .spark-empty { opacity: .3; }
+  .sparkcell { width: 180px; }
+  .sparknote { font-size: .68rem; color: var(--muted); margin-top: .1rem; }
+
+  footer { margin-top: 2rem; font-size: .82rem; color: var(--muted); }
+  footer ul { padding-left: 1.1rem; margin: .5rem 0 0; }
+  footer li { margin-bottom: .35rem; }
+  .empty { padding: 3rem 1rem; text-align: center; color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>spotfloor</h1>
+    <p class="lede">
+      Live GPU spot prices <em>and availability</em>, normalized across providers.
+      Price is the easy part — the question this answers is whether you can
+      actually get the node.
+    </p>
+    <p class="meta">
+      Observed {{ generated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC ·
+      history window {{ config.history_hours }}h ·
+      providers: {{ providers_seen | join(', ') if providers_seen else 'none yet' }} ·
+      page refreshes every 60s
+    </p>
+  </header>
+
+  {% if aws_present %}
+  <div class="callout">
+    <p><strong>AWS availability is <code>unknown</code>, and that is the honest answer.</strong>
+    AWS does not publish spot availability. The nearest thing, Spot Placement Score,
+    is computed against <em>the calling account's</em> quota and history — so a score
+    fetched with this app's credentials describes this account, not your odds of
+    getting capacity. spotfloor does not call that API under app credentials and
+    reports <code>unknown</code> rather than inventing a number.</p>
+    <p>Vast.ai publishes real per-machine inventory, so its availability column is a
+    fact. That asymmetry is a property of the providers, not a gap in this page.</p>
+  </div>
+  {% endif %}
+
+  {% for note in notes %}
+  <div class="callout warn"><p>{{ note }}</p></div>
+  {% endfor %}
+
+  <div class="tablecard">
+    {% if entries %}
+    <table>
+      <thead>
+        <tr>
+          <th>Provider</th>
+          <th>Kind</th>
+          <th class="num">Cheapest $/GPU·hr</th>
+          <th class="num">Cheapest obtainable</th>
+          <th>Cheapest node</th>
+          <th>Region <span class="dim">(provider-native)</span></th>
+          <th>Availability</th>
+          <th class="num">Obtainable supply</th>
+          <th class="sparkcell">Floor, last {{ config.history_hours }}h</th>
+        </tr>
+      </thead>
+      <tbody>
+      {% for gpu_model, group in entries | groupby('row.gpu_model') %}
+        <tr class="group"><td colspan="9">{{ gpu_model }}</td></tr>
+        {% for e in group %}
+        <tr>
+          <td class="prov">{{ e.row.provider }}</td>
+          <td class="dim">{{ e.row.price_kind }}</td>
+          <td class="num price">${{ '%.4f' % e.row.cheapest_per_gpu_hr }}</td>
+          <td class="num">
+            {% if e.row.cheapest_obtainable_per_gpu_hr is not none %}
+              <span class="price">${{ '%.4f' % e.row.cheapest_obtainable_per_gpu_hr }}</span>
+            {% elif not e.row.availability_known %}
+              <span class="dim" title="This provider does not expose availability.">unknown</span>
+            {% else %}
+              <span class="dim" title="Listed, but nothing is obtainable right now.">none</span>
+            {% endif %}
+          </td>
+          <td class="dim">{{ e.row.cheapest_gpu_count }}× @ ${{ '%.2f' % e.row.cheapest_price_usd_hr }}/hr</td>
+          <td class="dim">{{ e.row.cheapest_region }}</td>
+          <td><span class="pill {{ e.row.cheapest_availability }}">{{ e.row.cheapest_availability }}</span></td>
+          <td class="num">
+            {% if e.row.availability_known %}
+              {{ e.row.obtainable_nodes }} <span class="dim">/ {{ e.row.node_count }}</span>
+            {% else %}
+              <span class="dim">unknown ({{ e.row.node_count }} listed)</span>
+            {% endif %}
+          </td>
+          <td class="sparkcell">
+            {{ e.spark | safe }}
+            <div class="sparknote">
+              {% if e.observed_buckets %}
+                {{ e.observed_buckets }}/{{ e.series | length }} buckets observed
+              {% else %}
+                not yet observed
+              {% endif %}
+            </div>
+          </td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table>
+    {% else %}
+    <div class="empty">
+      <p><strong>No observations yet.</strong></p>
+      <p>The poller writes on its first tick; this page fills in within a minute.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <footer>
+    <ul>
+      <li><strong>“Cheapest observed”, never “cheapest that exists.”</strong> Vast's
+      search API returns a server-side slice, so this is the floor across what we
+      actually saw.</li>
+      <li><strong>GPU models are compared across providers; regions are not.</strong>
+      A chip is a chip, so an AWS <code>H100_SXM_80GB</code> and a Vast one are the
+      same silicon at comparable prices. A datacenter is not fungible: Vast's
+      “Japan, JP” is not <code>us-east-1a</code>, and no mapping between them is
+      invented. AWS regions <em>are</em> comparable to each other.</li>
+      <li><strong>Gaps in a sparkline are gaps.</strong> A bucket with no observation
+      is drawn as a break, not interpolated — not observed is a different claim
+      from unavailable.</li>
+      <li>Prices are per node (<code>$/hr</code>); the comparison axis is per GPU
+      (<code>$/GPU·hr</code>). JSON: <code>/api/market</code>,
+      <code>/api/history/{gpu_model}</code>.</li>
+    </ul>
+  </footer>
+
+</div>
+</body>
+</html>

@@ -18,6 +18,7 @@ becomes plain integer math that ports to DuckDB unchanged.
 from __future__ import annotations
 
 import sqlite3
+import threading
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
@@ -99,13 +100,22 @@ class SqliteTimeSeriesStore:
         :meth:`latest`. Must be several poll intervals, so that one failed provider
         fetch does not make every price appear to vanish.
         """
-        self._conn = sqlite3.connect(path, isolation_level=None)
+        # The poller writes from a scheduler thread while the web layer reads from
+        # request threads, so the connection is shared. That is safe here because
+        # CPython's sqlite3 reports threadsafety=3 (serialized) and WAL lets readers
+        # run alongside the writer -- but only at the *statement* level.
+        self._conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SCHEMA)
         self._gap_ttl_s = gap_ttl_s
         self._max_span_s = max_span_s
         self._freshness_ttl_s = freshness_ttl_s
+        # `write` decides insert-vs-extend by reading the open segment and then
+        # writing based on what it saw. Under `isolation_level=None` those are
+        # separate autocommitted statements, so two concurrent writers could both
+        # read the same segment and both insert. Serialize the whole decision.
+        self._write_lock = threading.Lock()
 
     # --- write ---------------------------------------------------------------
 
@@ -124,7 +134,7 @@ class SqliteTimeSeriesStore:
                 batch[offering.series_key] = offering
         skipped += len(offerings) - len(batch)
 
-        with self._conn:
+        with self._write_lock, self._conn:
             for offering in batch.values():
                 current = self._conn.execute(
                     """

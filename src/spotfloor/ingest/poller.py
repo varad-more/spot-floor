@@ -9,6 +9,7 @@ serial. If a tick runs long, the next one waits; backed-up runs collapse to one.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import Sequence
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -39,13 +40,22 @@ class Poller:
         return run_tick(self._providers, self._store)
 
     def start(self) -> None:
+        """Tick once immediately, then every ``interval_s``.
+
+        ``next_run_time`` must be a real timestamp. Passing ``None`` is not
+        "use the trigger's default" -- APScheduler reads it as "add this job
+        **paused**", so the poller silently never fires. Omitting it entirely
+        would work but defers the first tick by a whole interval, leaving a
+        freshly started process with an empty store and a blank dashboard for
+        five minutes. Polling now and scheduling from now is what a poller means.
+        """
         self._scheduler.add_job(
             self.tick,
             "interval",
             seconds=self._interval_s,
             max_instances=1,
             coalesce=True,
-            next_run_time=None,
+            next_run_time=datetime.now(UTC),
         )
         self._scheduler.start()
         logger.info("poller started; interval=%ds", self._interval_s)

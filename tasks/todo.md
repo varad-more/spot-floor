@@ -40,6 +40,16 @@ Not the full Phase 4 (no auth, no per-user rules, no Stripe). Just the view.
       the page* rather than rendering an empty AWS section
 - [x] Verified live: server running against Vast + AWS (us-east-1, us-west-2)
 
+## Hosting — GitHub Pages snapshot ✅
+
+- [x] `scripts/snapshot.py` renders the static site by driving the real app over
+      ASGI (no second rendering path to drift)
+- [x] Snapshot mode: no auto-refresh, relative API paths, explicit "this is a
+      snapshot" banner — tested in both directions so the modes cannot converge
+- [x] `TimeSeriesStore.prune(before)` + retention tied to the chart window
+- [x] Hourly GitHub Actions workflow; DB kept in the Actions cache, not published
+- [x] Live at https://varadmore.me/spot-floor/
+
 ---
 
 ## Review
@@ -99,8 +109,26 @@ against live providers, which is the argument for doing that before calling it d
 `from_env` now only passes keys for variables that are actually set, so the field
 defaults stay the single source of truth.
 
-Both were the same class of miss: the seam between components was tested, and the
-wiring that assembles them was not.
+**5. The first published page dropped its own caveat.** `build_providers` correctly
+reported "AWS is not configured", `snapshot.py` assigned it to `app.state.notes`,
+and lifespan startup — which runs *afterwards* — reset the list. The deployed page
+showed no AWS rows and no explanation, which reads as "AWS has no capacity" rather
+than "we never queried AWS". That is the precise misreading the note exists to
+prevent, and the note was the thing that vanished. Notes are now a `create_app`
+parameter, set before startup instead of clobbered by it. Found only by fetching
+the deployed page and asking why AWS was missing — no unit test exercised the
+constructor-then-lifespan ordering.
+
+All three were the same class of miss: the seam between components was tested, and
+the wiring that assembles them was not. Each was caught by running the thing rather
+than by testing its parts.
+
+**A test that read the ambient environment.** The Pages workflow sets
+`SPOTFLOOR_BUCKETS` job-wide, and `test_environment_overrides_are_parsed` asserted
+that an untouched variable falls through to its default. Green locally, red on its
+first CI run. A `clean_env` fixture now clears every `SPOTFLOOR_*` variable, and the
+fix was verified by running the suite under CI's exact variable set rather than a
+clean one.
 
 **On concurrency.** The dashboard reads while the poller writes, so
 `SqliteTimeSeriesStore` now opens with `check_same_thread=False` (safe:

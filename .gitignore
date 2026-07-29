@@ -23,6 +23,9 @@ spotfloor.db
 credentials
 aws_credentials
 
+# Rendered static snapshot (built by scripts/snapshot.py, deployed by CI)
+site/
+
 # OS / editor cruft
 .DS_Store
 .idea/

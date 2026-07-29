@@ -75,4 +75,14 @@ class TimeSeriesStore(Protocol):
         """Time-ordered series of segments overlapping the range."""
         ...
 
+    def prune(self, before: datetime) -> int:
+        """Drop segments that ended before ``before``. Returns rows removed.
+
+        Retention belongs here rather than in a caller: deciding what "ended
+        before" means is a statement about the segment model, and a script that
+        reached past this protocol to issue its own DELETE would be the first
+        thing to break when the backend becomes DuckDB.
+        """
+        ...
+
     def close(self) -> None: ...

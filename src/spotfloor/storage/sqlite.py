@@ -246,6 +246,25 @@ class SqliteTimeSeriesStore:
         ).fetchall()
         return [self._record(r) for r in rows]
 
+    def prune(self, before: datetime) -> int:
+        """Delete segments whose last observation predates ``before``.
+
+        The test is on ``last_seen``, not ``first_seen``: a segment that opened
+        two weeks ago and is *still open* is current state, not history, and
+        dropping it would erase the price the dashboard is showing right now.
+
+        ``VACUUM`` follows because the point of pruning here is a smaller file to
+        publish, and SQLite otherwise keeps the freed pages.
+        """
+        with self._write_lock:
+            cursor = self._conn.execute(
+                "DELETE FROM offering_observation WHERE last_seen < ?", (_epoch(before),)
+            )
+            removed = cursor.rowcount
+            if removed:
+                self._conn.execute("VACUUM")
+        return removed
+
     @staticmethod
     def _where(filt: OfferingFilter) -> tuple[str, list[Any]]:
         clauses: list[str] = []

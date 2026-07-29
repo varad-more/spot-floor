@@ -115,7 +115,12 @@ def build_providers(config: WebConfig) -> tuple[list[Provider], list[str]]:
     try:
         import boto3
 
-        if boto3.Session().get_credentials() is None:
+        # An unset GitHub Actions secret arrives as an empty string rather than as
+        # an absent variable, and botocore will hand back a Credentials object with
+        # a blank access key instead of None. Test the key, not just the object,
+        # or CI "configures" AWS and then fails every call.
+        credentials = boto3.Session().get_credentials()
+        if credentials is None or not credentials.access_key:
             notes.append(
                 "AWS is not configured (no credentials found), so no AWS prices are "
                 "shown. Vast data is unaffected."
@@ -219,12 +224,19 @@ def create_app(
     providers: Sequence[Provider] | None = None,
     config: WebConfig | None = None,
     poll: bool = True,
+    snapshot: bool = False,
 ) -> FastAPI:
     """Build the app.
 
     An injected ``store`` is treated as borrowed: the caller owns its lifetime and
     the app will not close it. That is what lets tests drive the real routes
     against a fixture store without the app tearing it down.
+
+    ``snapshot=True`` renders for a static host (GitHub Pages): no auto-refresh,
+    relative API paths, and the page states in its own words that it is a
+    point-in-time snapshot rather than a live view. A stale page that *looks*
+    live is the same kind of claim this project refuses to make about
+    availability, so the mode is explicit rather than inferred.
     """
     config = config or WebConfig.from_env()
     owns_store = store is None
@@ -323,6 +335,7 @@ def create_app(
                 "notes": request.app.state.notes,
                 "providers_seen": providers_seen,
                 "aws_present": "aws" in providers_seen,
+                "snapshot": snapshot,
             },
         )
 

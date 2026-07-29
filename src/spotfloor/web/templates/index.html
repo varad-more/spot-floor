@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="60">
+{% if not snapshot %}<meta http-equiv="refresh" content="60">{% endif %}
 <title>spotfloor — GPU price &amp; availability</title>
 <style>
   :root {
@@ -110,9 +110,21 @@
       Observed {{ generated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC ·
       history window {{ config.history_hours }}h ·
       providers: {{ providers_seen | join(', ') if providers_seen else 'none yet' }} ·
-      page refreshes every 60s
+      {% if snapshot %}static snapshot{% else %}page refreshes every 60s{% endif %}
     </p>
   </header>
+
+  {% if snapshot %}
+  <div class="callout warn">
+    <p><strong>This is a snapshot, not a live view.</strong> These prices were read
+    at <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> by a
+    scheduled job and written to a static page. Spot prices move continuously, so
+    treat every number here as “what was true then”, not “what is true now”.
+    Nothing on this page updates by itself.</p>
+    <p>For live data, run it yourself — <code>uv run python scripts/serve.py</code> —
+    which polls on an interval against the same providers.</p>
+  </div>
+  {% endif %}
 
   {% if aws_present %}
   <div class="callout">
@@ -211,8 +223,10 @@
       is drawn as a break, not interpolated — not observed is a different claim
       from unavailable.</li>
       <li>Prices are per node (<code>$/hr</code>); the comparison axis is per GPU
-      (<code>$/GPU·hr</code>). JSON: <code>/api/market</code>,
-      <code>/api/history/{gpu_model}</code>.</li>
+      (<code>$/GPU·hr</code>). JSON:
+      {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>,
+      <code>api/history/{gpu_model}.json</code>{% else %}<code>/api/market</code>,
+      <code>/api/history/{gpu_model}</code>{% endif %}.</li>
     </ul>
   </footer>
 

@@ -169,6 +169,54 @@ def test_healthz(client) -> None:
     assert client.get("/healthz").json() == {"status": "ok"}
 
 
+# --- snapshot mode -----------------------------------------------------------
+#
+# A static host cannot poll, so what it serves is a point-in-time snapshot. The
+# failure mode to guard against is a page that *looks* live -- an auto-refresh
+# meta tag and a timestamp imply data that keeps arriving. That is the same
+# species of unearned claim as reporting an availability we cannot observe.
+
+
+@pytest.fixture
+def snapshot_client(seeded):
+    app = create_app(store=seeded, config=WebConfig(), poll=False, snapshot=True)
+    with TestClient(app) as c:
+        yield c
+
+
+def test_a_snapshot_says_it_is_a_snapshot(snapshot_client) -> None:
+    body = snapshot_client.get("/").text
+    assert "This is a snapshot, not a live view" in body
+    assert "static snapshot" in body
+
+
+def test_a_snapshot_does_not_pretend_to_refresh(snapshot_client) -> None:
+    """The meta refresh would silently reload a page nothing is updating."""
+    assert 'http-equiv="refresh"' not in snapshot_client.get("/").text
+
+
+def test_the_live_page_does_refresh_and_makes_no_snapshot_claim(client) -> None:
+    """The inverse, so the two modes cannot quietly converge."""
+    body = client.get("/").text
+    assert 'http-equiv="refresh"' in body
+    assert "This is a snapshot" not in body
+
+
+def test_a_snapshot_links_relative_api_paths(snapshot_client) -> None:
+    """Absolute /api/... 404s under a project-scoped Pages URL."""
+    body = snapshot_client.get("/").text
+    assert "api/market.json" in body
+    assert "<code>/api/market</code>" not in body
+
+
+def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
+    """Self-contained by construction: no CDN, no fonts, no charting library."""
+    import re
+
+    body = snapshot_client.get("/").text
+    assert not re.search(r'(?:src|href)="https?://', body)
+
+
 # --- config ------------------------------------------------------------------
 #
 # `from_env` was the one path the tests did not touch, because every test builds

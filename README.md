@@ -162,6 +162,37 @@ Set `SPOTFLOOR_AWS_REGIONS=us-east-1,us-west-2,eu-west-1` to compare AWS against
 itself across regions. Vast needs no credentials; without AWS credentials the app
 still runs and says so on the page rather than showing an empty AWS section.
 
+### The hosted page is a snapshot, and says so
+
+GitHub Pages is a static host: it cannot run the poller, the store, or FastAPI.
+What is published there is a **snapshot** — a scheduled job runs a real poll,
+renders the page, and deploys the result hourly.
+
+```bash
+uv run python scripts/snapshot.py --out site
+```
+
+The renderer drives the real app over ASGI rather than re-rendering, so the static
+files are literally the responses the live app gives; there is no second rendering
+path to drift, and the first thing to drift would be a caveat.
+
+Snapshot mode is explicit, not inferred. The page drops its auto-refresh and
+carries a banner naming the time the prices were read — **a stale page that looks
+live is the same unearned claim as an availability we cannot observe**, so tests
+assert both that a snapshot says it is one and that the live page does not.
+
+The database is working state, not published output: it churns thousands of
+segments per poll to render a ~100 KiB page, so CI keeps it in the Actions cache
+rather than deploying it, and retention is tied to the chart window because
+nothing older is ever drawn. A cache miss costs history, not correctness.
+
+The workflow needs no configuration — Vast requires no credentials. AWS prices
+appear only if `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set as
+repository secrets; without them the page renders Vast-only and says AWS is not
+configured, rather than showing an empty AWS section that would read as "no
+capacity". Note that GitHub disables scheduled workflows after 60 days without
+repository activity.
+
 ---
 
 ## Layout

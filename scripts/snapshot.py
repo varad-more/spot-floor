@@ -103,6 +103,10 @@ def main() -> int:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)-7s %(name)s: %(message)s")
+    # One boto3 client per region means ~17 identical "Found credentials" lines at
+    # INFO, which buries the counts that actually matter in CI logs.
+    for noisy in ("botocore", "boto3", "urllib3", "s3transfer"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
 
     out = Path(args.out)
     if out.exists():

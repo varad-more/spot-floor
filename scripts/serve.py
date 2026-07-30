@@ -80,6 +80,12 @@ def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     )
+    # botocore logs "Found credentials in shared credentials file" at INFO once per
+    # client, and there is one client per region -- so a 17-region run buries every
+    # useful line under forty identical ones before the server has even started.
+    for noisy in ("botocore", "boto3", "urllib3", "s3transfer"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
+
     config = WebConfig.from_env()
     port = int(os.getenv("SPOTFLOOR_PORT", "8000"))
 

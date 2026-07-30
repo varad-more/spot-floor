@@ -1,7 +1,7 @@
 [project]
 name = "spotfloor"
 version = "0.1.0"
-description = "Add your description here"
+description = "AWS EC2 spot price tracker and cross-region comparator, honest about what it cannot know"
 readme = "README.md"
 authors = [
     { name = "Varad More", email = "varadmore1@gmail.com" }

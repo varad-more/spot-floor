@@ -3,119 +3,237 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{% if not snapshot %}<meta http-equiv="refresh" content="60">{% endif %}
+{% if not snapshot %}<meta http-equiv="refresh" content="300">{% endif %}
 <title>spotfloor — AWS spot prices by region</title>
 <style>
   :root {
+    color-scheme: light;
     --bg: #fbfbfa; --panel: #fff; --ink: #1a1a1a; --muted: #6b6b6b;
-    --line: #e5e4e1; --accent: #2f6f4f;
-    --ok-bg: #e7f4ec; --ok-fg: #1f6b41;
-    --warn-bg: #fdf1dd; --warn-fg: #8a5a10;
-    --bad-bg: #fdeaea; --bad-fg: #9b2c2c;
-    --unk-bg: transparent; --unk-fg: #6b6b6b; --unk-line: #b9b8b4;
+    --line: #e5e4e1; --accent: #2f6f4f; --grid: #ecebe8;
+    --warn-fg: #8a5a10; --bad-fg: #9b2c2c;
+    --unk-fg: #6b6b6b; --unk-line: #b9b8b4;
+    /* Categorical series slots, assigned in fixed order and never cycled.
+       Validated (light, surface #ffffff): CVD adjacent ΔE 9.1, normal-vision 19.6.
+       Three slots sit under 3:1 on white, so the relief rule applies -- the legend
+       labels are text in ink and the table below is the table view. */
+    --s1: #2a78d6; --s2: #eb6834; --s3: #1baf7a; --s4: #eda100;
+    --s5: #e87ba4; --s6: #008300; --s7: #4a3aa7; --s8: #e34948;
   }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
       --bg: #16171a; --panel: #1d1f23; --ink: #e9e8e6; --muted: #9a9a97;
-      --line: #2e3136; --accent: #7bc39a;
-      --ok-bg: #17301f; --ok-fg: #7bc39a;
-      --warn-bg: #33260f; --warn-fg: #e0b263;
-      --bad-bg: #351b1b; --bad-fg: #e08c8c;
-      --unk-bg: transparent; --unk-fg: #9a9a97; --unk-line: #4a4d52;
+      --line: #2e3136; --accent: #7bc39a; --grid: #262a2f;
+      --warn-fg: #e0b263; --bad-fg: #e08c8c;
+      --unk-fg: #9a9a97; --unk-line: #4a4d52;
+      /* The same eight hues re-stepped for the dark surface, not an auto-flip.
+         Validated (dark, surface #1d1f23): all eight ≥ 3:1, CVD adjacent ΔE 8.4. */
+      --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+      --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
     }
   }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #16171a; --panel: #1d1f23; --ink: #e9e8e6; --muted: #9a9a97;
+    --line: #2e3136; --accent: #7bc39a; --grid: #262a2f;
+    --warn-fg: #e0b263; --bad-fg: #e08c8c;
+    --unk-fg: #9a9a97; --unk-line: #4a4d52;
+    --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500;
+    --s5: #d55181; --s6: #008300; --s7: #9085e9; --s8: #e66767;
+  }
+
   * { box-sizing: border-box; }
   body {
     margin: 0; background: var(--bg); color: var(--ink);
     font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1320px; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
-  header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.02em; }
-  header p.lede { margin: .4rem 0 0; color: var(--muted); max-width: 64ch; }
-  .meta { margin-top: .75rem; font-size: .82rem; color: var(--muted); }
-  .meta code { background: var(--panel); border: 1px solid var(--line);
-    border-radius: 4px; padding: .1em .4em; }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .lede { margin: .35rem 0 0; color: var(--muted); max-width: 68ch; font-size: .95rem; }
+  .meta { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
+  code { font-size: .92em; background: var(--panel); border: 1px solid var(--line);
+    border-radius: 4px; padding: .08em .35em; }
 
   .callout {
-    margin: 1.75rem 0; padding: .9rem 1.1rem; background: var(--panel);
+    margin: 1.25rem 0; padding: .8rem 1rem; background: var(--panel);
     border: 1px solid var(--line); border-left: 3px solid var(--accent);
-    border-radius: 6px; font-size: .9rem;
+    border-radius: 6px; font-size: .875rem;
   }
-  .callout strong { font-weight: 600; }
   .callout.warn { border-left-color: #d08a2c; }
-  .callout p { margin: 0; }
-  .callout p + p { margin-top: .5rem; }
+  .callout p { margin: 0; } .callout p + p { margin-top: .45rem; }
+  details.callout > summary { cursor: pointer; font-weight: 600; }
+  details.callout > summary + * { margin-top: .5rem; }
 
-  /* --- controls: this is the "user selects what they want" surface. Filtering
-       is client-side over rows already in the page, so it works on a static
-       host with no server and no network round-trip. --- */
+  /* --- controls ---------------------------------------------------------- */
   .controls {
-    display: flex; flex-wrap: wrap; gap: .6rem; align-items: center;
-    margin: 1.5rem 0 .75rem;
+    display: flex; flex-wrap: wrap; gap: .6rem; align-items: flex-start;
+    margin: 1.25rem 0 .6rem;
   }
-  .controls input[type=search], .controls select {
-    font: inherit; font-size: .875rem; padding: .4rem .6rem;
-    background: var(--panel); color: var(--ink);
+  .ms { position: relative; flex: 1 1 22rem; min-width: 16rem; }
+  .ms-box {
+    display: flex; flex-wrap: wrap; gap: .3rem; align-items: center;
+    padding: .3rem .4rem; min-height: 2.3rem; cursor: text;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+  }
+  .ms-box:focus-within { border-color: var(--accent); }
+  .ms-box input {
+    flex: 1 1 6rem; min-width: 5rem; border: 0; outline: 0; padding: .15rem;
+    font: inherit; font-size: .85rem; background: transparent; color: var(--ink);
+  }
+  .chip {
+    display: inline-flex; align-items: center; gap: .3rem;
+    padding: .1rem .2rem .1rem .45rem; border-radius: 999px;
+    background: color-mix(in srgb, var(--accent) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+    font-size: .78rem; font-weight: 600; white-space: nowrap;
+  }
+  .chip button {
+    border: 0; background: transparent; color: inherit; cursor: pointer;
+    font-size: .95rem; line-height: 1; padding: 0 .2rem; opacity: .65;
+  }
+  .chip button:hover { opacity: 1; }
+  .ms-menu {
+    position: absolute; z-index: 30; left: 0; right: 0; top: calc(100% + 3px);
+    max-height: 15rem; overflow-y: auto; background: var(--panel);
     border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 8px 24px rgb(0 0 0 / .13);
   }
-  .controls input[type=search] { min-width: 15rem; flex: 1 1 15rem; }
-  .controls label.check {
-    font-size: .85rem; color: var(--muted); display: flex;
-    align-items: center; gap: .35rem; cursor: pointer;
+  .ms-menu[hidden] { display: none; }
+  .ms-menu div {
+    padding: .35rem .6rem; font-size: .85rem; cursor: pointer;
+    display: flex; justify-content: space-between; gap: 1rem;
   }
-  #count { font-size: .82rem; color: var(--muted); margin-left: auto; }
+  .ms-menu div small { color: var(--muted); }
+  .ms-menu div.on, .ms-menu div:hover {
+    background: color-mix(in srgb, var(--accent) 15%, transparent);
+  }
+  .ms-menu .none { color: var(--muted); cursor: default; }
+  .ms-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
+    color: var(--muted); font-weight: 600; margin-bottom: .2rem; display: block; }
 
-  .tablecard {
+  .btn {
+    font: inherit; font-size: .84rem; font-weight: 600; padding: .42rem .75rem;
+    background: var(--panel); color: var(--ink); cursor: pointer;
+    border: 1px solid var(--line); border-radius: 6px; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--accent); }
+  .btn.primary { background: var(--accent); color: var(--panel); border-color: transparent; }
+  .btn[disabled] { opacity: .55; cursor: progress; }
+  .toggles { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
+  .check { font-size: .84rem; color: var(--muted); display: flex;
+    align-items: center; gap: .3rem; cursor: pointer; white-space: nowrap; }
+  #count { font-size: .8rem; color: var(--muted); }
+  .scanstatus {
+    margin: 0 0 .6rem; padding: .45rem .7rem; font-size: .83rem;
     background: var(--panel); border: 1px solid var(--line);
-    border-radius: 8px; overflow-x: auto;
+    border-left: 3px solid var(--accent); border-radius: 6px;
   }
-  table { border-collapse: collapse; width: 100%; font-size: .875rem; }
+  .scanstatus.err { border-left-color: #c0392b; }
+
+  /* --- chart ------------------------------------------------------------- */
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .chartcard { padding: .9rem 1rem 1rem; margin-bottom: 1rem; }
+  .charthead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: 1rem; flex-wrap: wrap; margin-bottom: .5rem;
+  }
+  .charthead h2 { margin: 0; font-size: .95rem; }
+  .charthead .hint { font-size: .78rem; color: var(--muted); }
+  #chart { display: block; width: 100%; height: auto; touch-action: none; }
+  .plot-empty {
+    padding: 2.5rem 1rem; text-align: center; color: var(--muted); font-size: .88rem;
+  }
+  .legend {
+    display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin-top: .6rem;
+    font-size: .8rem;
+  }
+  .legend button {
+    display: inline-flex; align-items: center; gap: .4rem; cursor: pointer;
+    border: 0; background: transparent; font: inherit; color: var(--ink);
+    padding: .12rem .2rem; border-radius: 4px;
+  }
+  .legend button:hover { background: color-mix(in srgb, var(--ink) 6%, transparent); }
+  .legend button[aria-pressed="false"] { opacity: .42; text-decoration: line-through; }
+  .legend .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
+  .legend .val { color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  .tip {
+    position: fixed; z-index: 50; pointer-events: none; min-width: 11rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+    box-shadow: 0 6px 20px rgb(0 0 0 / .16); padding: .45rem .6rem;
+    font-size: .8rem; line-height: 1.45;
+  }
+  .tip[hidden] { display: none; }
+  .tip .when { color: var(--muted); font-size: .75rem; margin-bottom: .25rem; }
+  .tip table { border-collapse: collapse; width: 100%; }
+  .tip td { padding: .04rem 0; white-space: nowrap; }
+  .tip td.p { text-align: right; padding-left: .7rem;
+    font-variant-numeric: tabular-nums; font-weight: 600; }
+  .tip .sw { display: inline-block; width: 9px; height: 9px;
+    border-radius: 2px; margin-right: .35rem; }
+
+  /* --- table ------------------------------------------------------------- */
+  /* A fixed layout is what makes column resizing predictable, and the scroller
+     owns both axes so the sticky header survives vertical scrolling. */
+  .tablewrap { max-height: 68vh; overflow: auto; border-radius: 8px; }
+  table { border-collapse: separate; border-spacing: 0; table-layout: fixed;
+    width: 100%; font-size: .85rem; }
   thead th {
-    position: sticky; top: 0; background: var(--panel); text-align: left;
-    font-weight: 600; font-size: .74rem; letter-spacing: .04em;
+    position: sticky; top: 0; z-index: 2; background: var(--panel);
+    text-align: left; font-weight: 600; font-size: .71rem; letter-spacing: .04em;
     text-transform: uppercase; color: var(--muted);
-    padding: .7rem .8rem; border-bottom: 1px solid var(--line); white-space: nowrap;
+    padding: .6rem .7rem; border-bottom: 1px solid var(--line);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
   }
-  thead th.sortable { cursor: pointer; user-select: none; }
+  thead th.sortable { cursor: pointer; }
   thead th.sortable:hover { color: var(--ink); }
-  thead th .arrow { opacity: .45; font-size: .8em; }
-  tbody td { padding: .55rem .8rem; border-bottom: 1px solid var(--line);
-    vertical-align: middle; white-space: nowrap; }
-  tbody tr:last-child td { border-bottom: none; }
+  thead th .arrow { opacity: .4; font-size: .85em; }
+  .grip {
+    position: absolute; top: 0; right: 0; width: 7px; height: 100%;
+    cursor: col-resize; user-select: none;
+  }
+  .grip:hover, .grip.active { background: var(--accent); opacity: .55; }
+  thead th { position: sticky; }
+  thead th > .cell { position: relative; display: block; overflow: hidden;
+    text-overflow: ellipsis; }
+  tbody td {
+    padding: .48rem .7rem; border-bottom: 1px solid var(--line);
+    vertical-align: middle; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
   tbody tr.hidden { display: none; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--ink) 3.5%, transparent); }
+  tbody tr.plotted td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
   .num { font-variant-numeric: tabular-nums; text-align: right; }
   .price { font-weight: 600; font-variant-numeric: tabular-nums; }
   .dim { color: var(--muted); }
   .type { font-weight: 600; }
-  .zone { font-size: .8rem; }
-
-  /* Spread is evidence that the regional roll-up was lossy. Loud when it is big. */
+  .colsel { width: 34px; text-align: center; }
   .spread-hi { color: var(--bad-fg); font-weight: 600; }
   .spread-mid { color: var(--warn-fg); }
-
   .pill {
-    display: inline-block; padding: .12em .5em; border-radius: 999px;
-    font-size: .74rem; font-weight: 600; letter-spacing: .01em;
+    display: inline-block; padding: .1em .45em; border-radius: 999px;
+    font-size: .72rem; font-weight: 500; color: var(--unk-fg);
+    border: 1px dashed var(--unk-line);
   }
-  .pill.available   { background: var(--ok-bg);   color: var(--ok-fg); }
-  .pill.constrained { background: var(--warn-bg); color: var(--warn-fg); }
-  .pill.unavailable { background: var(--bad-bg);  color: var(--bad-fg); }
-  /* `unknown` is deliberately styled as an absence -- outlined, not filled --
-     so it never reads as a quiet "no capacity". */
-  .pill.unknown {
-    background: var(--unk-bg); color: var(--unk-fg);
-    border: 1px dashed var(--unk-line); font-weight: 500;
-  }
-
   .spark { display: block; color: var(--accent); }
   .spark-empty { opacity: .3; }
-  .sparkcell { width: 180px; }
-
-  footer { margin-top: 2rem; font-size: .82rem; color: var(--muted); }
-  footer ul { padding-left: 1.1rem; margin: .5rem 0 0; }
-  footer li { margin-bottom: .35rem; }
+  .cmp { border: 0; background: transparent; cursor: pointer; padding: 0 0 0 .3rem;
+    color: var(--muted); font: inherit; font-size: .8rem; }
+  .cmp:hover { color: var(--accent); }
   .empty { padding: 3rem 1rem; text-align: center; color: var(--muted); }
+
+  footer { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+    font-size: .82rem; color: var(--muted); }
+  footer ul { padding-left: 1.1rem; margin: .4rem 0 1rem; }
+  footer li { margin-bottom: .3rem; }
+  footer .by { display: flex; justify-content: space-between; gap: 1rem;
+    flex-wrap: wrap; align-items: baseline; }
+  footer a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -125,44 +243,40 @@
     <h1>spotfloor</h1>
     <p class="lede">
       AWS EC2 spot prices compared <em>across regions</em>, with {{ config.history_days }}-day
-      history. Every price names the availability zone it came from, because you
-      launch into a zone — not into a region.
+      history. Every price names the availability zone it came from — you launch into
+      a zone, not into a region.
     </p>
     <p class="meta">
-      Observed {{ generated_at.strftime('%Y-%m-%d %H:%M:%S') }} UTC ·
-      {{ entries | length }} rows ·
-      {{ regions_seen | length }} regions ·
-      history window {{ config.history_days }}d ·
-      {% if snapshot %}static snapshot{% else %}page refreshes every 60s{% endif %}
+      Data fetched <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> ·
+      {{ entries | length }} rows · {{ regions_seen | length }} regions ·
+      {{ types_seen | length }} instance types ·
+      {% if snapshot %}static snapshot{% else %}live, refreshes every 5&nbsp;min{% endif %}
     </p>
   </header>
 
   {% if snapshot %}
   <div class="callout warn">
-    <p><strong>This is a snapshot, not a live view.</strong> These prices were read
-    at <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> by a
-    scheduled job and written to a static page. Spot prices move continuously, so
-    treat every number here as “what was true then”, not “what is true now”.
-    Nothing on this page updates by itself.</p>
-    <p>For live data, run it yourself — <code>uv run python scripts/serve.py</code> —
-    which polls on an interval against the same API.</p>
+    <p><strong>This is a snapshot, not a live view.</strong> These prices were read at
+    <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> and written to a
+    static page. Spot prices move continuously, so read every number as “what was true
+    then”. Nothing here updates by itself.</p>
+    <p>For live data, clone the repo and run it against your own AWS account —
+    <code>uv run python scripts/serve.py --backfill</code>.</p>
   </div>
   {% endif %}
 
-  <div class="callout">
-    <p><strong>This is a price comparator, not an availability one.</strong>
-    AWS does not publish spot availability, so every availability cell below reads
-    <code>unknown</code> — deliberately, as a word rather than a blank. The nearest
-    thing AWS offers, Spot Placement Score, is computed against <em>the calling
-    account's</em> quota and history, so a score fetched with this app's credentials
-    describes this account and not your odds of getting capacity. spotfloor does not
-    call that API under app credentials and reports <code>unknown</code> rather than
-    inventing a number.</p>
+  <details class="callout">
+    <summary>Availability is <code>unknown</code> on every row — that is the honest answer</summary>
+    <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
+    is computed against <em>the calling account's</em> quota and history — so a score
+    fetched with this app's credentials describes that account, not your odds of getting
+    capacity. spotfloor does not call that API and reports <code>unknown</code> rather
+    than inventing a number. <strong>This is a price comparator; it does not claim to
+    know what you can get.</strong></p>
     <p><strong>“Price moves” is not availability either.</strong> It counts how many
-    times the price changed in the window — a real fact from AWS's published history,
-    and a fair hint that a zone is contended. It is not a fulfillment probability and
-    is not presented as one.</p>
-  </div>
+    times the price changed in the window — a real fact from AWS's published history and
+    a fair hint that a zone is contended. It is not a fulfillment probability.</p>
+  </details>
 
   {% for note in notes %}
   <div class="callout warn"><p>{{ note }}</p></div>
@@ -170,54 +284,79 @@
 
   {% if entries %}
   <div class="controls">
-    <input type="search" id="q" placeholder="Filter by instance type, family, region or zone…"
-           autocomplete="off" aria-label="Filter rows">
-    <select id="family" aria-label="Instance family">
-      <option value="">All families</option>
-      {% for family in families_seen %}<option value="{{ family }}">{{ family }}</option>{% endfor %}
-    </select>
-    <select id="region" aria-label="Region">
-      <option value="">All regions</option>
-      {% for region in regions_seen %}<option value="{{ region }}">{{ region }}</option>{% endfor %}
-    </select>
-    <label class="check"><input type="checkbox" id="gpuonly"> GPU only</label>
-    <span id="count"></span>
+    <div class="ms" id="ms-type">
+      <span class="ms-label">Instance types</span>
+      <div class="ms-box"><input type="text" placeholder="Type to search… e.g. p5, m7i"
+        autocomplete="off" aria-label="Filter by instance type"></div>
+      <div class="ms-menu" hidden></div>
+    </div>
+    <div class="ms" id="ms-region">
+      <span class="ms-label">Regions</span>
+      <div class="ms-box"><input type="text" placeholder="Type to search… e.g. us-east"
+        autocomplete="off" aria-label="Filter by region"></div>
+      <div class="ms-menu" hidden></div>
+    </div>
+    <div>
+      <span class="ms-label">&nbsp;</span>
+      <div class="toggles">
+        <label class="check"><input type="checkbox" id="gpuonly"> GPU only</label>
+        {% if not snapshot %}
+        <button type="button" class="btn primary" id="scan"
+          title="Query AWS now for the rows currently shown">Scan now</button>
+        {% endif %}
+        <button type="button" class="btn" id="clear">Clear</button>
+        <span id="count"></span>
+      </div>
+    </div>
   </div>
-  {% endif %}
+  {% if not snapshot %}<div id="scanstatus" class="scanstatus" hidden></div>{% endif %}
 
-  <div class="tablecard">
-    {% if entries %}
+  <section class="card chartcard">
+    <div class="charthead">
+      <h2>Price over {{ config.history_days }} days — $/hr</h2>
+      <span class="hint">Tick rows below to plot them, or use
+        <strong>⇄</strong> on a row to compare that instance across every region.</span>
+    </div>
+    <div id="plot"></div>
+    <div class="legend" id="legend"></div>
+  </section>
+
+  <div class="card tablewrap">
     <table id="grid">
       <thead>
         <tr>
-          <th class="sortable" data-key="type">Instance <span class="arrow">↕</span></th>
-          <th class="sortable" data-key="region">Region <span class="arrow">↕</span></th>
-          <th class="num sortable" data-key="price">$/hr <span class="arrow">↑</span></th>
-          <th>Cheapest zone</th>
-          <th class="num sortable" data-key="spread">AZ spread <span class="arrow">↕</span></th>
-          <th class="num">Spec</th>
-          <th class="num sortable" data-key="pergpu">$/GPU·hr <span class="arrow">↕</span></th>
-          <th>Avail.</th>
-          <th class="num sortable" data-key="moves">Price moves <span class="arrow">↕</span></th>
-          <th class="sparkcell">Last {{ config.history_days }}d</th>
+          <th class="colsel" style="width:34px"><span class="cell" title="Plot">▤</span></th>
+          <th class="sortable" data-key="type" style="width:132px"><span class="cell">Instance <span class="arrow">↕</span></span></th>
+          <th class="sortable" data-key="region" style="width:130px"><span class="cell">Region <span class="arrow">↕</span></span></th>
+          <th class="num sortable" data-key="price" style="width:94px"><span class="cell">$/hr <span class="arrow">↑</span></span></th>
+          <th style="width:140px"><span class="cell">Cheapest zone</span></th>
+          <th class="num sortable" data-key="spread" style="width:100px"><span class="cell">AZ spread <span class="arrow">↕</span></span></th>
+          <th style="width:180px"><span class="cell">Spec</span></th>
+          <th class="num sortable" data-key="pergpu" style="width:104px"><span class="cell">$/GPU·hr <span class="arrow">↕</span></span></th>
+          <th style="width:88px"><span class="cell">Avail.</span></th>
+          <th class="num sortable" data-key="moves" style="width:108px"><span class="cell">Price moves <span class="arrow">↕</span></span></th>
+          <th style="width:186px"><span class="cell">Last {{ config.history_days }}d</span></th>
         </tr>
       </thead>
       <tbody>
       {% for e in entries %}
-        <tr data-type="{{ e.row.instance_type }}"
+        <tr data-key="{{ e.row.instance_type }}|{{ e.row.region }}"
+            data-type="{{ e.row.instance_type }}"
             data-family="{{ e.row.instance_family }}"
             data-region="{{ e.row.region }}"
-            data-zone="{{ e.row.cheapest_zone }}"
             data-gpu="{{ 1 if e.row.gpu_count else 0 }}"
             data-price="{{ e.row.cheapest_usd_hr }}"
             data-spread="{{ '%.4f' % e.row.spread_pct }}"
             data-pergpu="{{ e.row.cheapest_per_gpu_hr if e.row.cheapest_per_gpu_hr is not none else -1 }}"
             data-moves="{{ e.row.price_changes if e.row.price_changes is not none else -1 }}">
-          <td class="type">{{ e.row.instance_type }}</td>
+          <td class="colsel"><input type="checkbox" class="plotbox"
+              aria-label="Plot {{ e.row.instance_type }} in {{ e.row.region }}"></td>
+          <td class="type">{{ e.row.instance_type }}<button type="button" class="cmp"
+              title="Plot {{ e.row.instance_type }} across all regions">⇄</button></td>
           <td>{{ e.row.region }}</td>
           <td class="num price">${{ '%.4f' % e.row.cheapest_usd_hr }}</td>
-          <td class="zone dim">{{ e.row.cheapest_zone }}
-            <span class="dim">({{ e.row.zone_count }} AZ{{ '' if e.row.zone_count == 1 else 's' }})</span>
+          <td class="dim">{{ e.row.cheapest_zone }}
+            <span class="dim">({{ e.row.zone_count }}&nbsp;AZ{{ '' if e.row.zone_count == 1 else 's' }})</span>
           </td>
           <td class="num">
             {% if e.row.zone_count < 2 %}
@@ -225,11 +364,10 @@
             {% else %}
               <span class="{% if e.row.spread_pct >= 25 %}spread-hi{% elif e.row.spread_pct >= 8 %}spread-mid{% endif %}"
                     title="Dearest zone {{ e.row.dearest_zone }} at ${{ '%.4f' % e.row.dearest_usd_hr }}/hr">
-                +{{ '%.1f' % e.row.spread_pct }}%
-              </span>
+                +{{ '%.1f' % e.row.spread_pct }}%</span>
             {% endif %}
           </td>
-          <td class="num dim">
+          <td class="dim">
             {{ e.row.vcpus if e.row.vcpus else '?' }} vCPU
             {%- if e.row.memory_gib %} · {{ '%g' % e.row.memory_gib }} GiB{% endif %}
             {%- if e.row.gpu_count %} · {{ e.row.gpu_count }}× {{ e.row.gpu_model }}{% endif %}
@@ -241,7 +379,7 @@
               <span class="dim" title="This instance type has no GPU.">—</span>
             {% endif %}
           </td>
-          <td><span class="pill {{ e.row.availability }}">{{ e.row.availability }}</span></td>
+          <td><span class="pill">{{ e.row.availability }}</span></td>
           <td class="num">
             {% if e.row.price_changes is none %}
               <span class="dim" title="No history in the window; not computed.">n/a</span>
@@ -253,115 +391,575 @@
               {% endif %}
             {% endif %}
           </td>
-          <td class="sparkcell">{{ e.spark | safe }}</td>
+          <td>{{ e.spark | safe }}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
-    {% else %}
-    <div class="empty">
-      <p><strong>No observations yet.</strong></p>
-      <p>The poller writes on its first tick; this page fills in within a minute.</p>
-    </div>
-    {% endif %}
   </div>
+  {% else %}
+  <div class="card"><div class="empty">
+    <p><strong>No observations yet.</strong></p>
+    <p>Run a scan: <code>uv run python scripts/scan.py --backfill</code></p>
+  </div></div>
+  {% endif %}
+
+  <div class="tip" id="tip" hidden></div>
 
   <footer>
     <ul>
-      <li><strong>A region row names its zone.</strong> AWS prices spot per
-      availability zone, and zones inside one region differ. The price shown is the
-      cheapest zone in that region, and the <em>AZ spread</em> column states how much
-      the roll-up hid — a big spread means the regional number alone is not
-      actionable.</li>
-      <li><strong>Instance types are compared across regions, and that is honest.</strong>
-      <code>m5.large</code> is the same 2 vCPU / 8 GiB machine in every region, so
-      the prices are directly comparable. No SKU normalization is needed or done.</li>
-      <li><strong>Gaps in a sparkline are gaps.</strong> A bucket with no observation
-      is drawn as a break, not interpolated — <em>not observed</em> is a different
-      claim from <em>unavailable</em>.</li>
-      <li><strong>Spot prices only</strong> (<code>Linux/UNIX</code>), per instance,
-      per hour. On-demand rates are a different API and are not shown. The watchlist
-      is {{ config.instance_types | length }} instance types — bounded on purpose,
+      <li><strong>A region row names its zone.</strong> AWS prices spot per availability
+      zone, and zones inside one region differ — sometimes by 350%. The price shown is
+      the cheapest zone; <em>AZ spread</em> states how much the roll-up hid.</li>
+      <li><strong>Gaps stay gaps.</strong> A bucket with no observation is a break in the
+      line, never zero and never the previous price carried forward — <em>not
+      observed</em> is a different claim from <em>unavailable</em>.</li>
+      <li><strong>Spot only</strong> (<code>Linux/UNIX</code>), per instance, per hour.
+      Watchlist is {{ config.instance_types | length }} types — bounded on purpose,
       because us-east-1 alone lists 1,354.</li>
-      <li>JSON:
-      {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>,
-      <code>api/history/{instance_type}.json</code>{% else %}<code>/api/market</code>,
-      <code>/api/history/{instance_type}</code>{% endif %}.</li>
+      <li>JSON: {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>
+      {%- else %}<code>/api/market</code>, <code>/api/history/{instance_type}</code>{% endif %}</li>
     </ul>
+    <div class="by">
+      <span>Built by <strong>Varad More</strong> ·
+        <a href="https://github.com/varad-more/spot-floor">github.com/varad-more/spot-floor</a></span>
+      <span>Data fetched {{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
+    </div>
   </footer>
 
 </div>
 
 {% if entries %}
+<script id="chartdata" type="application/json">{{ chart_data | safe }}</script>
 <script>
-// Filtering and sorting run over the rows already in the document. No fetch, no
-// framework, no CDN -- the page must work as a static file, and a strict CSP on
-// the host forbids external scripts anyway.
 (function () {
+  "use strict";
+
+  var DATA = JSON.parse(document.getElementById('chartdata').textContent);
+  var MAX_SERIES = 8;   // the categorical palette has 8 validated slots, never cycled
+  var SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
+
   var table = document.getElementById('grid');
   var tbody = table.tBodies[0];
   var rows = Array.prototype.slice.call(tbody.rows);
-  var q = document.getElementById('q');
-  var family = document.getElementById('family');
-  var region = document.getElementById('region');
-  var gpuonly = document.getElementById('gpuonly');
   var count = document.getElementById('count');
+  var plot = document.getElementById('plot');
+  var legendEl = document.getElementById('legend');
+  var tip = document.getElementById('tip');
+  var gpuonly = document.getElementById('gpuonly');
+
+  var selectedTypes = new Set();
+  var selectedRegions = new Set();
+  var plotted = [];            // ordered: color follows the entity, not its rank
+  var hidden = new Set();      // legend toggles
   var sortKey = 'price', sortDir = 1;
 
-  function haystack(row) {
-    var d = row.dataset;
-    return (d.type + ' ' + d.family + ' ' + d.region + ' ' + d.zone).toLowerCase();
+  function css(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+  function colorFor(key) {
+    return css(SLOTS[plotted.indexOf(key) % SLOTS.length]);
   }
 
-  function apply() {
-    var term = q.value.trim().toLowerCase();
-    var fam = family.value, reg = region.value, gpu = gpuonly.checked;
-    var shown = 0;
+  // ---------------------------------------------------------------- multi-select
+  function multiselect(id, options, selected, onChange) {
+    var root = document.getElementById(id);
+    var input = root.querySelector('input');
+    var box = root.querySelector('.ms-box');
+    var menu = root.querySelector('.ms-menu');
 
-    rows.forEach(function (row) {
-      var d = row.dataset;
-      var ok = (!term || haystack(row).indexOf(term) !== -1)
-            && (!fam || d.family === fam)
-            && (!reg || d.region === reg)
-            && (!gpu || d.gpu === '1');
-      row.classList.toggle('hidden', !ok);
-      if (ok) shown++;
+    function renderChips() {
+      Array.prototype.slice.call(box.querySelectorAll('.chip')).forEach(function (c) {
+        c.remove();
+      });
+      Array.from(selected).forEach(function (value) {
+        var chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.textContent = value;
+        var x = document.createElement('button');
+        x.type = 'button';
+        x.innerHTML = '&times;';
+        x.setAttribute('aria-label', 'Remove ' + value);
+        x.addEventListener('mousedown', function (event) {
+          event.preventDefault();
+          selected.delete(value);
+          renderChips(); renderMenu(); onChange();
+        });
+        chip.appendChild(x);
+        box.insertBefore(chip, input);
+      });
+      input.placeholder = selected.size ? 'Add more…' : input.dataset.ph;
+    }
+
+    function renderMenu() {
+      var term = input.value.trim().toLowerCase();
+      var matches = options.filter(function (o) {
+        return !term || o.toLowerCase().indexOf(term) !== -1;
+      });
+      menu.innerHTML = '';
+      if (!matches.length) {
+        var none = document.createElement('div');
+        none.className = 'none';
+        none.textContent = 'No match';
+        menu.appendChild(none);
+        return;
+      }
+      matches.slice(0, 60).forEach(function (value) {
+        var item = document.createElement('div');
+        if (selected.has(value)) { item.className = 'on'; }
+        var label = document.createElement('span');
+        label.textContent = value;
+        item.appendChild(label);
+        if (selected.has(value)) {
+          var mark = document.createElement('small');
+          mark.textContent = 'selected';
+          item.appendChild(mark);
+        }
+        item.addEventListener('mousedown', function (event) {
+          event.preventDefault();
+          if (selected.has(value)) { selected.delete(value); } else { selected.add(value); }
+          input.value = '';
+          renderChips(); renderMenu(); onChange();
+        });
+        menu.appendChild(item);
+      });
+    }
+
+    input.dataset.ph = input.placeholder;
+    box.addEventListener('mousedown', function (event) {
+      if (event.target === box) { event.preventDefault(); input.focus(); }
+    });
+    input.addEventListener('focus', function () { menu.hidden = false; renderMenu(); });
+    input.addEventListener('input', function () { menu.hidden = false; renderMenu(); });
+    input.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape') { menu.hidden = true; input.blur(); }
+      if (event.key === 'Backspace' && !input.value && selected.size) {
+        var last = Array.from(selected).pop();
+        selected.delete(last);
+        renderChips(); renderMenu(); onChange();
+      }
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        var first = menu.querySelector('div:not(.none)');
+        if (first) { first.dispatchEvent(new MouseEvent('mousedown')); }
+      }
+    });
+    document.addEventListener('mousedown', function (event) {
+      if (!root.contains(event.target)) { menu.hidden = true; }
     });
 
+    renderChips();
+    return { refresh: function () { renderChips(); renderMenu(); } };
+  }
+
+  // ---------------------------------------------------------------- filtering
+  function applyFilters() {
+    var shown = 0;
+    rows.forEach(function (row) {
+      var d = row.dataset;
+      var ok = (!selectedTypes.size || selectedTypes.has(d.type))
+            && (!selectedRegions.size || selectedRegions.has(d.region))
+            && (!gpuonly.checked || d.gpu === '1');
+      row.classList.toggle('hidden', !ok);
+      if (ok) { shown++; }
+    });
     count.textContent = shown === rows.length
       ? rows.length + ' rows'
       : shown + ' of ' + rows.length + ' rows';
   }
 
-  function sort(key) {
-    if (sortKey === key) { sortDir = -sortDir; } else { sortKey = key; sortDir = 1; }
-    var numeric = key !== 'type' && key !== 'region';
-
-    rows.sort(function (a, b) {
-      var x = a.dataset[key], y = b.dataset[key];
-      if (numeric) { return (parseFloat(x) - parseFloat(y)) * sortDir; }
-      return x.localeCompare(y) * sortDir;
+  // ---------------------------------------------------------------- the chart
+  function niceTicks(lo, hi, want) {
+    // Picks the nice step whose tick COUNT lands closest to `want`, rather than the
+    // first step wide enough. Taking the first leaves gaps: prices spanning
+    // 6.6–20.3 asking for 5 ticks jump straight to a step of 5 and render just
+    // three gridlines, because the nice-number set skips from 2.5 to 5.
+    var span = hi - lo;
+    if (span <= 0) { return [lo]; }
+    var mag = Math.pow(10, Math.floor(Math.log10(span / want)));
+    var best = null;
+    [1, 2, 2.5, 5, 10].forEach(function (m) {
+      [mag, mag * 10].forEach(function (scale) {
+        var candidate = m * scale;
+        var count = Math.floor(hi / candidate) - Math.ceil(lo / candidate) + 1;
+        if (count < 3 || count > 9) { return; }
+        var score = Math.abs(count - want);
+        if (best === null || score < best.score) { best = { step: candidate, score: score }; }
+      });
     });
-    rows.forEach(function (row) { tbody.appendChild(row); });
+    var step = best ? best.step : span / want;
+    var out = [];
+    for (var v = Math.ceil(lo / step) * step; v <= hi + step * 1e-9; v += step) {
+      out.push(v);
+    }
+    return out;
+  }
 
-    Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
-      var arrow = th.querySelector('.arrow');
-      if (!arrow) { return; }
-      arrow.textContent = th.dataset.key === sortKey ? (sortDir > 0 ? '↑' : '↓') : '↕';
+  function money(value) {
+    if (value >= 10) { return '$' + value.toFixed(2); }
+    if (value >= 1) { return '$' + value.toFixed(3); }
+    return '$' + value.toFixed(4);
+  }
+
+  function bucketDate(index) {
+    return new Date(Date.parse(DATA.start) + index * DATA.step_s * 1000);
+  }
+
+  var geom = null;   // kept for hit-testing on hover
+
+  function drawChart() {
+    var active = plotted.filter(function (k) { return !hidden.has(k); });
+    legendEl.innerHTML = '';
+
+    if (!plotted.length) {
+      plot.innerHTML = '<div class="plot-empty">Tick a row below to plot its price '
+        + 'history, or press <strong>⇄</strong> on a row to compare that instance '
+        + 'across every region.</div>';
+      geom = null;
+      renderLegend();
+      return;
+    }
+
+    var W = Math.max(plot.clientWidth || 900, 360);
+    var H = 300, padL = 62, padR = 14, padT = 12, padB = 30;
+    var iw = W - padL - padR, ih = H - padT - padB;
+
+    var lo = Infinity, hi = -Infinity;
+    active.forEach(function (key) {
+      (DATA.series[key] || []).forEach(function (v) {
+        if (v === null) { return; }
+        if (v < lo) { lo = v; }
+        if (v > hi) { hi = v; }
+      });
+    });
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (hi === lo) { hi = lo * 1.1 || 1; lo = Math.max(0, lo * 0.9); }
+    var pad = (hi - lo) * 0.08;
+    lo = Math.max(0, lo - pad); hi = hi + pad;
+
+    var n = DATA.buckets;
+    var x = function (i) { return padL + (n === 1 ? iw / 2 : (i / (n - 1)) * iw); };
+    var y = function (v) { return padT + ih - ((v - lo) / (hi - lo)) * ih; };
+
+    var svg = ['<svg id="chart" viewBox="0 0 ' + W + ' ' + H
+      + '" role="img" aria-label="Spot price over time for the selected rows">'];
+
+    // Recessive grid + y axis. Horizontal rules only: vertical ones add nothing
+    // on a dense time axis and compete with the data.
+    niceTicks(lo, hi, 5).forEach(function (v) {
+      var yy = y(v).toFixed(1);
+      svg.push('<line x1="' + padL + '" x2="' + (W - padR) + '" y1="' + yy + '" y2="' + yy
+        + '" stroke="var(--grid)" stroke-width="1"/>');
+      svg.push('<text x="' + (padL - 8) + '" y="' + (y(v) + 3.5).toFixed(1)
+        + '" text-anchor="end" font-size="10.5" fill="var(--muted)">' + money(v) + '</text>');
+    });
+
+    // x labels: first, middle, last -- enough to orient without crowding.
+    [0, Math.floor((n - 1) / 2), n - 1].forEach(function (i, slot) {
+      var d = bucketDate(i);
+      var label = (d.getUTCMonth() + 1) + '/' + d.getUTCDate();
+      svg.push('<text x="' + x(i).toFixed(1) + '" y="' + (H - 9)
+        + '" text-anchor="' + (slot === 0 ? 'start' : slot === 2 ? 'end' : 'middle')
+        + '" font-size="10.5" fill="var(--muted)">' + label + '</text>');
+    });
+
+    // One polyline per contiguous run. A gap is a break, never bridged --
+    // interpolating would assert an observation we never made.
+    active.forEach(function (key) {
+      var values = DATA.series[key] || [];
+      var color = colorFor(key);
+      var run = [];
+      var flush = function () {
+        if (run.length > 1) {
+          svg.push('<polyline fill="none" stroke="' + color + '" stroke-width="2"'
+            + ' stroke-linecap="round" stroke-linejoin="round" points="'
+            + run.join(' ') + '"/>');
+        } else if (run.length === 1) {
+          var p = run[0].split(',');
+          svg.push('<circle cx="' + p[0] + '" cy="' + p[1] + '" r="2.4" fill="'
+            + color + '"/>');
+        }
+        run = [];
+      };
+      values.forEach(function (v, i) {
+        if (v === null) { flush(); } else { run.push(x(i).toFixed(1) + ',' + y(v).toFixed(1)); }
+      });
+      flush();
+    });
+
+    svg.push('<line class="crosshair" x1="0" x2="0" y1="' + padT + '" y2="'
+      + (padT + ih) + '" stroke="var(--muted)" stroke-width="1" opacity="0"/>');
+    svg.push('<g class="dots"></g>');
+    svg.push('</svg>');
+    plot.innerHTML = svg.join('');
+
+    geom = { W: W, H: H, padL: padL, padR: padR, padT: padT, ih: ih, iw: iw,
+             n: n, lo: lo, hi: hi, x: x, y: y, active: active };
+    wireHover();
+    renderLegend();
+  }
+
+  function renderLegend() {
+    // A legend is always present for >=2 series, and identity is never colour
+    // alone: every entry carries its text label in ink.
+    legendEl.innerHTML = '';
+    if (!plotted.length) { return; }
+    plotted.forEach(function (key) {
+      var values = DATA.series[key] || [];
+      var last = null;
+      for (var i = values.length - 1; i >= 0; i--) {
+        if (values[i] !== null) { last = values[i]; break; }
+      }
+      var on = !hidden.has(key);
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.setAttribute('aria-pressed', on ? 'true' : 'false');
+      button.title = on ? 'Hide this series' : 'Show this series';
+      button.innerHTML = '<span class="swatch" style="background:' + colorFor(key)
+        + '"></span>' + key.replace('|', ' · ')
+        + (last === null ? '' : ' <span class="val">' + money(last) + '</span>');
+      button.addEventListener('click', function () {
+        if (hidden.has(key)) { hidden.delete(key); } else { hidden.add(key); }
+        drawChart();
+      });
+      legendEl.appendChild(button);
     });
   }
 
-  [q, family, region, gpuonly].forEach(function (el) {
-    el.addEventListener('input', apply);
-    el.addEventListener('change', apply);
-  });
-  Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
-    if (th.dataset.key) {
-      th.addEventListener('click', function () { sort(th.dataset.key); });
+  function wireHover() {
+    var svg = document.getElementById('chart');
+    if (!svg) { return; }
+    var crosshair = svg.querySelector('.crosshair');
+    var dots = svg.querySelector('.dots');
+
+    function leave() {
+      crosshair.setAttribute('opacity', '0');
+      dots.innerHTML = '';
+      tip.hidden = true;
     }
+
+    svg.addEventListener('mouseleave', leave);
+    svg.addEventListener('mousemove', function (event) {
+      var box = svg.getBoundingClientRect();
+      var scale = geom.W / box.width;
+      var px = (event.clientX - box.left) * scale;
+      var i = Math.round(((px - geom.padL) / geom.iw) * (geom.n - 1));
+      i = Math.max(0, Math.min(geom.n - 1, i));
+
+      var hits = geom.active.map(function (key) {
+        return { key: key, v: (DATA.series[key] || [])[i] };
+      }).filter(function (h) { return h.v !== null && h.v !== undefined; });
+
+      if (!hits.length) { leave(); return; }
+
+      var cx = geom.x(i);
+      crosshair.setAttribute('x1', cx); crosshair.setAttribute('x2', cx);
+      crosshair.setAttribute('opacity', '0.45');
+      dots.innerHTML = hits.map(function (h) {
+        // 2px surface ring so overlapping markers stay separable.
+        return '<circle cx="' + cx.toFixed(1) + '" cy="' + geom.y(h.v).toFixed(1)
+          + '" r="4" fill="' + colorFor(h.key)
+          + '" stroke="var(--panel)" stroke-width="2"/>';
+      }).join('');
+
+      var when = bucketDate(i);
+      tip.innerHTML = '<div class="when">'
+        + when.toISOString().slice(0, 16).replace('T', ' ') + ' UTC</div><table>'
+        + hits.sort(function (a, b) { return b.v - a.v; }).map(function (h) {
+            return '<tr><td><span class="sw" style="background:' + colorFor(h.key)
+              + '"></span>' + h.key.replace('|', ' · ') + '</td><td class="p">'
+              + money(h.v) + '</td></tr>';
+          }).join('') + '</table>';
+      tip.hidden = false;
+      var tb = tip.getBoundingClientRect();
+      var left = event.clientX + 14;
+      if (left + tb.width > window.innerWidth - 8) { left = event.clientX - tb.width - 14; }
+      var top = Math.min(event.clientY + 14, window.innerHeight - tb.height - 8);
+      tip.style.left = Math.max(8, left) + 'px';
+      tip.style.top = Math.max(8, top) + 'px';
+    });
+  }
+
+  // ---------------------------------------------------------------- plot selection
+  function syncBoxes() {
+    rows.forEach(function (row) {
+      var box = row.querySelector('.plotbox');
+      var on = plotted.indexOf(row.dataset.key) !== -1;
+      box.checked = on;
+      row.classList.toggle('plotted', on);
+      // Past the palette's 8 validated slots a 9th hue would have to be invented,
+      // so the control is disabled rather than the colour cycled.
+      box.disabled = !on && plotted.length >= MAX_SERIES;
+    });
+  }
+
+  function togglePlot(key, on) {
+    var at = plotted.indexOf(key);
+    if (on && at === -1) {
+      if (plotted.length >= MAX_SERIES) { return; }
+      plotted.push(key);
+    } else if (!on && at !== -1) {
+      plotted.splice(at, 1);
+      hidden.delete(key);
+    }
+    syncBoxes(); drawChart();
+  }
+
+  rows.forEach(function (row) {
+    row.querySelector('.plotbox').addEventListener('change', function (event) {
+      togglePlot(row.dataset.key, event.target.checked);
+    });
+    row.querySelector('.cmp').addEventListener('click', function () {
+      // "Compare this instance across regions" -- the question the tool exists for.
+      var type = row.dataset.type;
+      var keys = rows.filter(function (r) { return r.dataset.type === type; })
+        .sort(function (a, b) {
+          return parseFloat(a.dataset.price) - parseFloat(b.dataset.price);
+        })
+        .slice(0, MAX_SERIES)
+        .map(function (r) { return r.dataset.key; });
+      plotted = keys;
+      hidden.clear();
+      selectedTypes.clear(); selectedTypes.add(type);
+      typeMS.refresh(); applyFilters(); syncBoxes(); drawChart();
+      document.getElementById('plot').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    });
   });
 
-  apply();
+  // ---------------------------------------------------------------- sorting
+  function sort(key) {
+    if (sortKey === key) { sortDir = -sortDir; } else { sortKey = key; sortDir = 1; }
+    var numeric = key !== 'type' && key !== 'region';
+    rows.sort(function (a, b) {
+      var x = a.dataset[key], yv = b.dataset[key];
+      return numeric ? (parseFloat(x) - parseFloat(yv)) * sortDir
+                     : x.localeCompare(yv) * sortDir;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+    Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
+      var arrow = th.querySelector('.arrow');
+      if (arrow) {
+        arrow.textContent = th.dataset.key === sortKey ? (sortDir > 0 ? '↑' : '↓') : '↕';
+      }
+    });
+  }
+
+  Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
+    if (!th.dataset.key) { return; }
+    th.querySelector('.cell').addEventListener('click', function () { sort(th.dataset.key); });
+  });
+
+  // ---------------------------------------------------------------- column resize
+  // Plain pointer events on a grip in each header cell. `table-layout: fixed` is
+  // what makes this behave: without it the browser re-flows every other column
+  // whenever one changes and the drag feels like it fights back.
+  Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th, index) {
+    if (index === table.tHead.rows[0].cells.length - 1) { return; }
+    var grip = document.createElement('span');
+    grip.className = 'grip';
+    grip.title = 'Drag to resize';
+    th.querySelector('.cell').appendChild(grip);
+
+    grip.addEventListener('pointerdown', function (event) {
+      event.preventDefault();
+      event.stopPropagation();
+      grip.classList.add('active');
+      var startX = event.clientX;
+      var startW = th.getBoundingClientRect().width;
+      grip.setPointerCapture(event.pointerId);
+
+      function move(moveEvent) {
+        th.style.width = Math.max(48, startW + moveEvent.clientX - startX) + 'px';
+      }
+      function up() {
+        grip.classList.remove('active');
+        grip.removeEventListener('pointermove', move);
+        grip.removeEventListener('pointerup', up);
+        drawChart();
+      }
+      grip.addEventListener('pointermove', move);
+      grip.addEventListener('pointerup', up);
+    });
+  });
+
+  // ---------------------------------------------------------------- wiring
+  var typeMS = multiselect('ms-type', {{ types_seen | tojson }}, selectedTypes, applyFilters);
+  var regionMS = multiselect('ms-region', {{ regions_seen | tojson }}, selectedRegions, applyFilters);
+  gpuonly.addEventListener('change', applyFilters);
+
+  document.getElementById('clear').addEventListener('click', function () {
+    selectedTypes.clear(); selectedRegions.clear();
+    gpuonly.checked = false;
+    plotted = []; hidden.clear();
+    typeMS.refresh(); regionMS.refresh();
+    applyFilters(); syncBoxes(); drawChart();
+  });
+
+  var resizeTimer;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(drawChart, 150);
+  });
+
+  {% if not snapshot %}
+  // --- Scan now -------------------------------------------------------------
+  // Absent in snapshot mode: a static file has no server to scan with, and a
+  // control that silently does nothing is worse than no control. Filtering,
+  // sorting, resizing and the chart all still work there -- they only touch data
+  // already in the document.
+  //
+  // Scans exactly what is on screen. Narrowing is about rate limits and latency,
+  // not cost: EC2 describe calls are free, but throttles are per region.
+  var scan = document.getElementById('scan');
+  var status = document.getElementById('scanstatus');
+
+  function say(text, isError) {
+    status.hidden = false;
+    status.textContent = text;
+    status.classList.toggle('err', !!isError);
+  }
+
+  scan.addEventListener('click', function () {
+    var types = {}, regions = {};
+    rows.forEach(function (row) {
+      if (!row.classList.contains('hidden')) {
+        types[row.dataset.type] = 1;
+        regions[row.dataset.region] = 1;
+      }
+    });
+    var t = Object.keys(types), r = Object.keys(regions);
+    if (!t.length) { say('Nothing is shown to scan.', true); return; }
+
+    scan.disabled = true;
+    scan.textContent = 'Scanning…';
+    say('Querying AWS for ' + t.length + ' instance type(s) across ' + r.length + ' region(s)…');
+
+    fetch('api/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ instance_types: t, regions: r })
+    }).then(function (response) {
+      return response.json().then(function (body) {
+        if (!response.ok) { throw new Error(body.detail || response.statusText); }
+        return body;
+      });
+    }).then(function (body) {
+      var failed = Object.keys(body.failures || {});
+      say('Scanned in ' + body.duration_s + 's — ' + body.inserted + ' new price(s), '
+        + body.extended + ' unchanged'
+        + (failed.length ? '. Could not reach: ' + failed.join(', ') : '') + '. Reloading…');
+      setTimeout(function () { location.reload(); }, 1100);
+    }).catch(function (error) {
+      say('Scan failed: ' + error.message, true);
+      scan.disabled = false;
+      scan.textContent = 'Scan now';
+    });
+  });
+  {% endif %}
+
+  applyFilters();
+  syncBoxes();
+  drawChart();
 })();
 </script>
 {% endif %}

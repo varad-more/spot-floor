@@ -28,18 +28,21 @@ Deeper history stays available per instance type through
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
+from spotfloor.ingest.pipeline import run_tick
 from spotfloor.ingest.poller import Poller
 from spotfloor.providers.aws import DEFAULT_INSTANCE_TYPES
 from spotfloor.providers.base import Provider
@@ -203,6 +206,39 @@ def build_entries(
     return entries
 
 
+def series_payload(
+    entries: Sequence[TableEntry], *, now: datetime, config: WebConfig
+) -> dict[str, Any]:
+    """Every row's price history, compact enough to embed in the page.
+
+    The chart plots arbitrary combinations of (instance type, region), so the data
+    has to be present before the user picks -- fetching per selection would break
+    the static export, which has no server. Embedding it also means the chart works
+    offline once the page is loaded.
+
+    Compact by construction: a shared time axis (``start`` + ``step_s``) instead of a
+    timestamp per point, and prices rounded to 6 significant digits. Emitting
+    ``{"at": iso, "price": x}`` per point would be roughly 6x the bytes for identical
+    pixels -- 646 series x 56 buckets is 36k points either way.
+
+    ``null`` means *not observed* and must be drawn as a break in the line. It is not
+    zero and not the previous price carried forward.
+    """
+    step_s = int(timedelta(days=config.history_days).total_seconds() / config.buckets)
+    return {
+        "start": (now - timedelta(days=config.history_days)).isoformat(),
+        "step_s": step_s,
+        "buckets": config.buckets,
+        "series": {
+            f"{e.row.instance_type}|{e.row.region}": [
+                None if p.floor_usd_hr is None else round(p.floor_usd_hr, 6)
+                for p in e.series
+            ]
+            for e in entries
+        },
+    }
+
+
 def _row_json(entry: TableEntry) -> dict[str, Any]:
     row = entry.row
     return {
@@ -246,6 +282,7 @@ def create_app(
     poll: bool = True,
     snapshot: bool = False,
     notes: Sequence[str] | None = None,
+    provider_factory: Callable[[WebConfig], tuple[list[Provider], list[str]]] | None = None,
 ) -> FastAPI:
     """Build the app.
 
@@ -257,15 +294,27 @@ def create_app(
     relative API paths, and the page states in its own words that it is a
     point-in-time snapshot rather than a live view. A stale page that *looks* live is
     the same kind of unearned claim this project refuses to make about availability,
-    so the mode is explicit rather than inferred.
+    so the mode is explicit rather than inferred. It also drops the refresh route and
+    button entirely -- a static file has no server to scan with, and a button that
+    silently does nothing is worse than no button.
 
     ``notes`` are caller-supplied caveats rendered on the page -- for a caller that
     assembled the providers itself and so knows what is missing. They must be passed
     here rather than assigned to ``app.state`` afterwards, because lifespan startup
     runs later and would overwrite them.
+
+    ``provider_factory`` builds providers from a (possibly narrowed) config. It exists
+    because ``POST /api/refresh`` scans a *scope* rather than everything, so providers
+    have to be constructible per request instead of once at startup.
     """
     config = config or WebConfig.from_env()
     owns_store = store is None
+    factory = provider_factory or build_providers
+
+    # Serializes on-demand scans. A user clicking Refresh twice, or two browser tabs
+    # doing it at once, must not double-poll the same regions -- rate limits are per
+    # region and a duplicated scan spends quota to learn nothing.
+    scan_lock = threading.Lock()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> Iterator[None]:
@@ -276,7 +325,7 @@ def create_app(
         if poll:
             selected = list(providers) if providers is not None else None
             if selected is None:
-                selected, discovered = build_providers(config)
+                selected, discovered = factory(config)
                 app.state.notes = [*app.state.notes, *discovered]
             poller = Poller(selected, app.state.store, interval_s=config.poll_interval_s)
             poller.start()
@@ -343,6 +392,74 @@ def create_app(
             }
         )
 
+    # Registered only outside snapshot mode: a static file has no server behind it,
+    # so a refresh button there would be a control that silently does nothing.
+    if not snapshot:
+
+        @app.post("/api/refresh")
+        def api_refresh(
+            request: Request,
+            instance_types: list[str] | None = Body(default=None),
+            regions: list[str] | None = Body(default=None),
+        ) -> JSONResponse:
+            """Scan now, optionally narrowed to specific instance types and regions.
+
+            **This is the one route that contacts AWS.** Every GET reads storage only,
+            which is what keeps API quota tied to the schedule rather than to traffic.
+            A scan is something you explicitly ask for, so it is a POST -- and the
+            read-only guarantee for GETs stays intact and tested.
+
+            Narrowing is about rate limits and latency, not money: EC2 describe calls
+            are free, but throttles are per region, so a scan of 2 regions instead of
+            17 returns in a fraction of the time and leaves the rest of your quota
+            alone. The page sends whatever is currently filtered, so "scan just the
+            p5 rows I'm looking at" is one click.
+            """
+            if not scan_lock.acquire(blocking=False):
+                raise HTTPException(
+                    status_code=409,
+                    detail="a scan is already running; wait for it to finish",
+                )
+            try:
+                scoped = replace(
+                    config,
+                    regions=tuple(regions) if regions else config.regions,
+                    instance_types=(
+                        tuple(instance_types) if instance_types else config.instance_types
+                    ),
+                )
+                selected, discovered = factory(scoped)
+                if not selected:
+                    raise HTTPException(
+                        status_code=503,
+                        detail="; ".join(discovered) or "no provider is configured",
+                    )
+
+                started = datetime.now(UTC)
+                report = run_tick(selected, request.app.state.store, now=started)
+
+                # Per-region failures reach the caller for the same reason they reach
+                # the page: a region that vanished is not a region with no capacity.
+                provider_notes = [n for p in selected for n in getattr(p, "notes", [])]
+
+                return JSONResponse(
+                    {
+                        "scanned_at": started.isoformat(),
+                        "duration_s": round(
+                            (datetime.now(UTC) - started).total_seconds(), 2
+                        ),
+                        "regions": list(scoped.regions) if scoped.regions else "all enabled",
+                        "instance_types": len(scoped.instance_types),
+                        "fetched": report.fetched,
+                        "inserted": report.write.inserted,
+                        "extended": report.write.extended,
+                        "failures": report.failures,
+                        "notes": [*discovered, *provider_notes],
+                    }
+                )
+            finally:
+                scan_lock.release()
+
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Any:
         now = datetime.now(UTC)
@@ -357,6 +474,10 @@ def create_app(
                 "notes": request.app.state.notes,
                 "regions_seen": sorted({e.row.region for e in entries}),
                 "families_seen": sorted({e.row.instance_family for e in entries}),
+                "types_seen": sorted({e.row.instance_type for e in entries}),
+                "chart_data": json.dumps(
+                    series_payload(entries, now=now, config=config), separators=(",", ":")
+                ),
                 "snapshot": snapshot,
             },
         )

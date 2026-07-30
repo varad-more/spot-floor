@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "SpotfloorReadOnlyPricing",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:DescribeSpotPriceHistory",
+        "ec2:DescribeInstanceTypes",
+        "ec2:DescribeRegions"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

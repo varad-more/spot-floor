@@ -25,6 +25,8 @@ aws_credentials
 
 # Rendered static snapshot (built by scripts/snapshot.py, deployed by CI)
 site/
+# public/ IS committed: it is the sample snapshot GitHub Pages serves, generated
+# locally so no AWS credentials ever go near this repository.
 
 # OS / editor cruft
 .DS_Store

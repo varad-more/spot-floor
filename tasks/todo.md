@@ -54,6 +54,65 @@ cheapest AZ named. Operator-configured watchlist, in-browser filtering.
 - [x] Region comparison table, client-side search / family filter / sort
 - [x] Self-contained (no CDN) — CSP on the Artifact/Pages host forbids it
 
+## Phase H — UI: multi-select, resizable table, multi-series chart ✅
+
+- [x] Multi-select with autocomplete for instance types and regions (chips +
+      filtered dropdown), replacing the single free-text search box
+- [x] Table scroller owns both axes (`max-height: 68vh; overflow: auto`) so the
+      sticky header survives vertical scrolling
+- [x] Resizable columns — pointer-capture grips; `table-layout: fixed` is what makes
+      the drag behave instead of reflowing every other column
+- [x] **Multi-series line chart**: tick rows to plot, or ⇄ on a row to compare that
+      instance across every region — the question the tool exists to answer
+- [x] Legend with per-series toggles, crosshair + tooltip, gaps drawn as breaks
+- [x] Series data embedded in the page (shared time axis, 6-sig-fig prices) so the
+      chart works on the static export, which has no server to fetch from
+- [x] README restructured: practical guide only; rationale moved to `docs/DESIGN.md`
+- [x] `public/` committed as the Pages sample + footer crediting Varad More
+
+**Chart colours were computed, not chosen.** Ran the categorical palette through the
+validator in both modes rather than eyeballing: light (surface `#ffffff`) passes the
+lightness band, chroma floor, CVD adjacent ΔE 9.1 and normal-vision ΔE 19.6, with a
+contrast WARN on three slots — which obligates relief, satisfied by text legend labels
+in ink plus the table view. Dark (surface `#1d1f23`) passes all six including contrast.
+Eight slots, assigned in fixed order and never cycled: the plot control disables at 8
+rather than inventing a 9th hue.
+
+**A tick-algorithm bug found by testing the pure helpers in Node.** `niceTicks` took
+the first nice step wide enough, so a 6.6–20.3 range asking for 5 gridlines rendered
+only 3 — the nice-number set skips 2.5 → 5. Now picks the step whose tick *count* is
+closest to the target; six representative ranges all yield 4–6 gridlines.
+
+**A test that conflated linking with loading.** `test_the_page_loads_nothing_from_a_
+third_party` matched any `href="https://"`, so the footer's repo link failed it. A
+strict CSP constrains what a page *fetches*, not what it links to, so the test now
+checks subresource elements specifically (`<script src>`, `<link href>`, `@import`,
+`url(http…)`) and separately asserts every external URL sits on an `<a>`.
+
+## Phase G — local-first: on-demand scanning + setup ✅
+
+Decided 2026-07-29: **no credentials in GitHub.** Users clone and run against their
+own account, so the hosted deploy is deleted rather than secured.
+
+- [x] `POST /api/refresh` — the only route that contacts AWS; every GET stays
+      storage-only and a test still enforces it
+- [x] **Scan now** button scanning exactly the rows currently filtered, so "only
+      these instances" is one click
+- [x] Concurrent scans refused with 409 rather than doubled (quota is per region)
+- [x] `scripts/scan.py --types --regions --backfill --show` for cron/terminal
+- [x] `scripts/check_setup.py` preflight: creds, validity, each IAM action, live price
+- [x] `docs/iam-policy.json` — the three read-only actions
+- [x] Deleted `pages.yml`, added `ci.yml` (offline tests + entry-point smoke test)
+- [x] Catalog fetched with a server-side `Filters` entry: 3.52s → 1.85s, and an
+      unknown watchlist entry is unmatched rather than fatal
+- [x] Quieted botocore's per-client "Found credentials" INFO spam (~40 lines/run)
+
+**Corrected a false premise rather than building around it.** The request was to
+scope scans "so it doesn't increase bills". EC2 describe calls are **free** — AWS does
+not bill per request, so a 17-region scan costs $0.00. What scoping actually saves is
+wall-clock time and per-region rate quota. Built it anyway (2.6s scoped vs 6.7s full),
+with the real reason documented so nobody optimizes against an imaginary cost.
+
 ## Phase F — hosting, revised by measurement ✅
 
 - [x] **Deleted the Actions DB cache.** It existed because a poller cannot

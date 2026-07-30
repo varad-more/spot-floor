@@ -227,18 +227,96 @@ def test_healthz(client) -> None:
 # filtering happens in the browser over rows already in the document.
 
 
-def test_the_page_ships_filter_controls(client) -> None:
+def test_the_page_ships_multiselect_filter_controls(client) -> None:
+    """Multi-select with autocomplete, not a single free-text box."""
     body = client.get("/").text
-    assert 'id="q"' in body
-    assert 'id="family"' in body
-    assert 'id="region"' in body
+    assert 'id="ms-type"' in body
+    assert 'id="ms-region"' in body
     assert 'id="gpuonly"' in body
+    assert 'id="clear"' in body
+
+
+def test_the_multiselects_are_populated_with_every_observed_value(client) -> None:
+    """The autocomplete options come from the data, not a hardcoded list."""
+    body = client.get("/").text
+    # Rendered as JSON arrays into the script, so the exact values must appear.
+    assert '"m5.large"' in body and '"p5.48xlarge"' in body
+    assert '"us-east-1"' in body and '"us-west-2"' in body
 
 
 def test_rows_carry_the_data_attributes_the_filters_read(client) -> None:
     body = client.get("/").text
-    for attribute in ("data-type", "data-family", "data-region", "data-gpu", "data-price"):
+    for attribute in ("data-key", "data-type", "data-family", "data-region",
+                      "data-gpu", "data-price"):
         assert attribute in body
+
+
+# --- the chart ---------------------------------------------------------------
+
+
+def test_the_page_embeds_series_data_for_the_chart(client) -> None:
+    """Embedded rather than fetched, so the chart works on a static export too."""
+    import json
+    import re
+
+    body = client.get("/").text
+    match = re.search(r'<script id="chartdata" type="application/json">(.*?)</script>', body, re.S)
+    assert match, "no chart data embedded"
+
+    payload = json.loads(match.group(1))
+    assert payload["buckets"] > 0
+    assert "step_s" in payload and "start" in payload
+    # Keyed by (instance_type, region) -- the pair the chart plots.
+    assert "m5.large|us-east-1" in payload["series"]
+    assert "m5.large|us-west-2" in payload["series"]
+    assert len(payload["series"]["m5.large|us-east-1"]) == payload["buckets"]
+
+
+def test_unobserved_buckets_are_null_in_the_chart_payload(client) -> None:
+    """`null` means not observed. The chart must break the line, not bridge it.
+
+    Sending 0 or a carried-forward price would make the chart assert an observation
+    that was never made -- the same class of claim as a fabricated availability.
+    """
+    import json
+    import re
+
+    body = client.get("/").text
+    payload = json.loads(
+        re.search(r'id="chartdata" type="application/json">(.*?)</script>', body, re.S).group(1)
+    )
+    series = payload["series"]["m5.large|us-east-1"]
+
+    # The fixture writes one observation, so most of the 7-day window is unobserved.
+    assert None in series, "expected gaps to be present as null"
+    assert 0 not in series, "a gap was encoded as zero"
+
+
+def test_the_chart_ships_a_legend_container_and_a_plot_target(client) -> None:
+    body = client.get("/").text
+    assert 'id="plot"' in body
+    assert 'id="legend"' in body
+    assert 'id="tip"' in body  # hover tooltip layer
+
+
+def test_rows_offer_a_compare_across_regions_control(client) -> None:
+    """The question the tool exists for, as one click per row."""
+    body = client.get("/").text
+    assert 'class="cmp"' in body
+    assert "across all regions" in body
+
+
+def test_the_chart_works_in_snapshot_mode_too(snapshot_client) -> None:
+    """Charting touches only embedded data, so a static export keeps it."""
+    body = snapshot_client.get("/").text
+    assert 'id="chartdata"' in body
+    assert 'id="plot"' in body
+
+
+def test_the_page_credits_its_author(client) -> None:
+    body = client.get("/").text
+    assert "Varad More" in body
+    assert "Data fetched" in body
 
 
 # --- snapshot mode -----------------------------------------------------------
@@ -300,11 +378,28 @@ def test_caller_supplied_notes_survive_startup_and_reach_the_page(seeded) -> Non
 
 
 def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
-    """Self-contained by construction: no CDN, no fonts, no charting library."""
+    """Self-contained by construction: no CDN, no fonts, no charting library.
+
+    Checks *subresource* loads specifically, not every external URL. A plain
+    ``<a href="https://…">`` in the footer fetches nothing and is exactly what a
+    published page should carry; a strict CSP constrains what the page requests, so
+    that is what this asserts.
+    """
     import re
 
     body = snapshot_client.get("/").text
-    assert not re.search(r'(?:src|href)="https?://', body)
+
+    # Anything that would issue a network request for a subresource.
+    assert not re.search(r"<script[^>]+\bsrc\s*=", body), "external script"
+    assert not re.search(r"<link[^>]+\bhref\s*=\s*[\"']https?://", body), "external stylesheet"
+    assert not re.search(r"<(?:img|iframe|source|video|audio)[^>]+\bsrc\s*=\s*[\"']https?://", body)
+    assert "@import" not in body, "CSS @import can fetch a remote sheet"
+    assert not re.search(r"url\(\s*[\"']?https?://", body), "remote url() in CSS"
+
+    # And the only external URLs present are links a reader can click.
+    for match in re.finditer(r'href="(https?://[^"]+)"', body):
+        start = body.rfind("<", 0, match.start())
+        assert body[start : start + 3] == "<a ", f"non-anchor external href: {match.group(1)}"
 
 
 # --- config ------------------------------------------------------------------
@@ -383,6 +478,169 @@ def test_a_config_from_env_actually_renders_a_page(store, clean_env) -> None:
     with TestClient(app) as client:
         assert client.get("/").status_code == 200
         assert client.get("/api/market").status_code == 200
+
+
+# --- on-demand scanning ------------------------------------------------------
+#
+# POST /api/refresh is the ONLY route that contacts AWS. Every GET reads storage,
+# which is what keeps API quota tied to the schedule rather than to page traffic.
+# The tests below pin both halves of that split.
+
+
+class RecordingProvider:
+    """A provider that records what it was asked for instead of calling AWS."""
+
+    name = "aws"
+
+    def __init__(self, config: WebConfig) -> None:
+        self.config = config
+        self.notes: list[str] = []
+        self.calls = 0
+
+    def fetch(self):
+        self.calls += 1
+        return [
+            offering(
+                instance_type=self.config.instance_types[0],
+                region=(self.config.regions or ("us-east-1",))[0],
+                zone=(self.config.regions or ("us-east-1",))[0] + "a",
+                price=0.0333,
+            )
+        ]
+
+
+@pytest.fixture
+def scan_app(seeded):
+    """An app whose provider factory records the scope it was handed."""
+    built: list[RecordingProvider] = []
+
+    def factory(config: WebConfig) -> tuple[list, list[str]]:
+        provider = RecordingProvider(config)
+        built.append(provider)
+        return [provider], []
+
+    app = create_app(
+        store=seeded,
+        config=WebConfig(instance_types=("m5.large", "c5.large"), regions=("us-east-1",)),
+        poll=False,
+        provider_factory=factory,
+    )
+    with TestClient(app) as client:
+        yield client, built
+
+
+def test_refresh_scans_and_reports_what_it_wrote(scan_app) -> None:
+    client, built = scan_app
+    response = client.post("/api/refresh", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["fetched"] == {"aws": 1}
+    assert body["inserted"] + body["extended"] >= 1
+    assert built and built[0].calls == 1
+
+
+def test_refresh_narrows_the_scan_to_the_requested_scope(scan_app) -> None:
+    """The point of scoping: 2 regions instead of 17 is faster and spends less quota."""
+    client, built = scan_app
+    response = client.post(
+        "/api/refresh",
+        json={"instance_types": ["p5.48xlarge"], "regions": ["eu-west-1", "eu-west-2"]},
+    )
+
+    assert response.status_code == 200
+    scoped = built[-1].config
+    assert scoped.instance_types == ("p5.48xlarge",)
+    assert scoped.regions == ("eu-west-1", "eu-west-2")
+    assert response.json()["regions"] == ["eu-west-1", "eu-west-2"]
+
+
+def test_an_empty_scope_falls_back_to_the_configured_watchlist(scan_app) -> None:
+    """"Scan everything" must not be spelled as "scan nothing"."""
+    client, built = scan_app
+    client.post("/api/refresh", json={"instance_types": [], "regions": []})
+
+    scoped = built[-1].config
+    assert scoped.instance_types == ("m5.large", "c5.large")
+    assert scoped.regions == ("us-east-1",)
+
+
+def test_a_second_concurrent_scan_is_refused_rather_than_doubled(seeded) -> None:
+    """Two clicks must not double-poll: rate limits are per region, and the second
+    scan would spend quota to learn exactly what the first is already learning."""
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    class BlockingProvider:
+        name = "aws"
+        notes: list[str] = []
+
+        def fetch(self):
+            entered.set()
+            release.wait(timeout=5)
+            return []
+
+    app = create_app(
+        store=seeded,
+        config=WebConfig(),
+        poll=False,
+        provider_factory=lambda config: ([BlockingProvider()], []),
+    )
+
+    with TestClient(app) as client:
+        result: dict[str, int] = {}
+        first = threading.Thread(
+            target=lambda: result.__setitem__(
+                "first", client.post("/api/refresh", json={}).status_code
+            )
+        )
+        first.start()
+        assert entered.wait(timeout=5), "the first scan never started"
+
+        assert client.post("/api/refresh", json={}).status_code == 409
+
+        release.set()
+        first.join(timeout=5)
+        assert result["first"] == 200
+
+        # And the lock is released, so a later scan still works.
+        assert client.post("/api/refresh", json={}).status_code == 200
+
+
+def test_refresh_reports_an_unconfigured_provider_instead_of_pretending(seeded) -> None:
+    app = create_app(
+        store=seeded,
+        config=WebConfig(),
+        poll=False,
+        provider_factory=lambda config: ([], ["AWS is not configured"]),
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/refresh", json={})
+
+    assert response.status_code == 503
+    assert "not configured" in response.json()["detail"]
+
+
+def test_a_snapshot_has_no_refresh_route_and_no_button(snapshot_client) -> None:
+    """A static file has no server; a button that silently does nothing is worse
+    than no button, so both the route and the control are absent.
+
+    404 rather than 405: the route is never registered in snapshot mode, so the path
+    genuinely does not exist -- which is the honest status for it.
+    """
+    assert snapshot_client.post("/api/refresh", json={}).status_code == 404
+    body = snapshot_client.get("/").text
+    assert 'id="scan"' not in body
+    assert "Scan now" not in body
+
+
+def test_the_live_page_does_offer_a_scan_button(client) -> None:
+    """The inverse, so the two modes cannot quietly converge."""
+    body = client.get("/").text
+    assert 'id="scan"' in body
+    assert "Scan now" in body
 
 
 def test_a_page_load_does_not_fetch_from_providers(seeded) -> None:

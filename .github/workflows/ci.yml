@@ -1,0 +1,71 @@
+name: CI & Pages
+
+# Two jobs, and neither one needs AWS credentials.
+#
+# `test` runs the offline suite. The `live` marker is excluded on purpose: those tests
+# hit the real AWS API and are the correctness gates a developer runs locally with
+# their own account. They are expected to run, just not here.
+#
+# `publish` deploys the snapshot already committed under `public/`. That snapshot is
+# generated on a developer's machine with their own credentials
+# (`scripts/snapshot.py --out public`), so there are no secrets in this repository and
+# no way for CI to refresh the data. The page says when it was captured and tells the
+# reader to clone and run it for live numbers -- a static page that implied live data
+# would be the same unearned claim this project refuses to make about availability.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - run: uv sync --frozen
+
+      - name: Offline test suite
+        run: uv run pytest -m "not live" -q
+
+      # Proves the entry points import and parse their arguments without credentials.
+      # Cheap, and it catches the class of breakage where a rename lands in the library
+      # but not in the script users are told to run first -- which is exactly what
+      # happened to `WebConfig.aws_regions` during the region pivot.
+      - name: Entry points are runnable
+        run: |
+          uv run python scripts/scan.py --help > /dev/null
+          uv run python scripts/serve.py --help > /dev/null
+          uv run python scripts/snapshot.py --help > /dev/null
+          uv run python -c "import ast, pathlib; ast.parse(pathlib.Path('scripts/check_setup.py').read_text())"
+
+  publish:
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+      - id: deploy
+        uses: actions/deploy-pages@v4

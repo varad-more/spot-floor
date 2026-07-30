@@ -5,6 +5,14 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {% if not snapshot %}<meta http-equiv="refresh" content="300">{% endif %}
 <title>spotfloor — AWS spot prices by region</title>
+<script>
+  /* Applied before first paint: reading the stored choice later flashes the other
+     theme for a frame. The dark rules already keyed off [data-theme]; nothing set it. */
+  try {
+    var saved = localStorage.getItem('sf-theme');
+    if (saved) { document.documentElement.dataset.theme = saved; }
+  } catch (e) { /* private mode: fall back to the OS preference */ }
+</script>
 <style>
   :root {
     color-scheme: light;
@@ -50,7 +58,14 @@
   }
   .wrap { max-width: 1400px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
   h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
+  .head { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; }
   .lede { margin: .35rem 0 0; color: var(--muted); max-width: 68ch; font-size: .95rem; }
+  /* The availability caveat used to live only inside a collapsed <details>, which
+     is a claim the reader never sees, and inside a table column that said the same
+     word 646 times. Stated once, always visible, and linked to the long version. */
+  .claim { margin: .6rem 0 0; font-size: .84rem; color: var(--muted); max-width: 68ch; }
+  .claim .pill { margin-right: .25rem; vertical-align: baseline; }
+  .claim a { color: var(--accent); }
   .meta { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
   code { font-size: .92em; background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: .08em .35em; }
@@ -108,6 +123,7 @@
   .ms-menu div.on, .ms-menu div:hover {
     background: color-mix(in srgb, var(--accent) 15%, transparent);
   }
+  .ms-menu div.hi { background: color-mix(in srgb, var(--accent) 26%, transparent); }
   .ms-menu .none { color: var(--muted); cursor: default; }
   .ms-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); font-weight: 600; margin-bottom: .2rem; display: block; }
@@ -120,6 +136,7 @@
   .btn:hover { border-color: var(--accent); }
   .btn.primary { background: var(--accent); color: var(--panel); border-color: transparent; }
   .btn[disabled] { opacity: .55; cursor: progress; }
+  .iconbtn { flex: none; font-size: 1rem; line-height: 1.1; padding: .38rem .55rem; }
   .toggles { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; }
   .check { font-size: .84rem; color: var(--muted); display: flex;
     align-items: center; gap: .3rem; cursor: pointer; white-space: nowrap; }
@@ -141,7 +158,8 @@
     gap: 1rem; flex-wrap: wrap; margin-bottom: .5rem;
   }
   .charthead h2 { margin: 0; font-size: .95rem; }
-  .charthead .hint { font-size: .78rem; color: var(--muted); }
+  .charthead .hint { font-size: .78rem; color: var(--muted); flex: 1 1 12rem; }
+  #enlarge { margin-left: auto; flex: none; }
   #chart { display: block; width: 100%; height: auto; touch-action: none; }
   .plot-empty {
     padding: 2.5rem 1rem; text-align: center; color: var(--muted); font-size: .88rem;
@@ -160,20 +178,24 @@
   .legend .swatch { width: 11px; height: 11px; border-radius: 3px; flex: none; }
   .legend .val { color: var(--muted); font-variant-numeric: tabular-nums; }
 
+  /* A readout, not a panel. Eight series have to fit beside the cursor without
+     turning into a card, so this is sized in the small type scale and the rows
+     are a grid rather than a table. */
   .tip {
-    position: fixed; z-index: 50; pointer-events: none; min-width: 11rem;
-    background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
-    box-shadow: 0 6px 20px rgb(0 0 0 / .16); padding: .45rem .6rem;
-    font-size: .8rem; line-height: 1.45;
+    position: fixed; z-index: 50; pointer-events: none; max-width: 17rem;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 5px;
+    box-shadow: 0 3px 10px rgb(0 0 0 / .12); padding: .3rem .42rem;
+    font-size: .72rem; line-height: 1.32;
   }
   .tip[hidden] { display: none; }
-  .tip .when { color: var(--muted); font-size: .75rem; margin-bottom: .25rem; }
-  .tip table { border-collapse: collapse; width: 100%; }
-  .tip td { padding: .04rem 0; white-space: nowrap; }
-  .tip td.p { text-align: right; padding-left: .7rem;
-    font-variant-numeric: tabular-nums; font-weight: 600; }
-  .tip .sw { display: inline-block; width: 9px; height: 9px;
-    border-radius: 2px; margin-right: .35rem; }
+  .tip .when {
+    color: var(--muted); font-size: .67rem; letter-spacing: .02em;
+    padding-bottom: .2rem; margin-bottom: .2rem; border-bottom: 1px solid var(--line);
+  }
+  .tip .r { display: flex; align-items: center; gap: .32rem; white-space: nowrap; }
+  .tip .r b { margin-left: auto; padding-left: .75rem; font-weight: 600;
+    font-variant-numeric: tabular-nums; }
+  .tip .sw { width: 7px; height: 7px; border-radius: 2px; flex: none; }
 
   /* --- table ------------------------------------------------------------- */
   /* A fixed layout is what makes column resizing predictable, and the scroller
@@ -191,7 +213,13 @@
   }
   thead th.sortable { cursor: pointer; }
   thead th.sortable:hover { color: var(--ink); }
+  thead th:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   thead th .arrow { opacity: .4; font-size: .85em; }
+  /* Native title tooltips: a column whose meaning has to be guessed is the bug,
+     and the platform already ships the fix. */
+  .q { cursor: help; opacity: .5; margin-left: .15em;
+    vertical-align: super; font-size: .8em; }
+  .q:hover { opacity: 1; }
   .grip {
     position: absolute; top: 0; right: 0; width: 7px; height: 100%;
     cursor: col-resize; user-select: none;
@@ -205,6 +233,7 @@
     vertical-align: middle; white-space: nowrap;
     overflow: hidden; text-overflow: ellipsis;
   }
+  tbody tr { cursor: pointer; }   /* the whole row plots it, not just the checkbox */
   tbody tr.hidden { display: none; }
   tbody tr:hover td { background: color-mix(in srgb, var(--ink) 3.5%, transparent); }
   tbody tr.plotted td { background: color-mix(in srgb, var(--accent) 10%, transparent); }
@@ -212,7 +241,7 @@
   .price { font-weight: 600; font-variant-numeric: tabular-nums; }
   .dim { color: var(--muted); }
   .type { font-weight: 600; }
-  .colsel { width: 34px; text-align: center; }
+  .colsel { text-align: center; }
   .spread-hi { color: var(--bad-fg); font-weight: 600; }
   .spread-mid { color: var(--warn-fg); }
   .pill {
@@ -222,10 +251,36 @@
   }
   .spark { display: block; color: var(--accent); }
   .spark-empty { opacity: .3; }
-  .cmp { border: 0; background: transparent; cursor: pointer; padding: 0 0 0 .3rem;
-    color: var(--muted); font: inherit; font-size: .8rem; }
-  .cmp:hover { color: var(--accent); }
+  .sparkcell { cursor: zoom-in; }
+  .sparkcell:hover .spark { color: var(--ink); }
+  .rowacts { display: inline-flex; gap: .1rem; margin-left: .25rem; }
+  .rowacts button {
+    border: 0; background: transparent; cursor: pointer; padding: 0 .12rem;
+    color: var(--muted); font: inherit; font-size: .8rem; opacity: .45;
+  }
+  tr:hover .rowacts button, .rowacts button:focus-visible { opacity: 1; }
+  .rowacts button:hover { color: var(--accent); }
   .empty { padding: 3rem 1rem; text-align: center; color: var(--muted); }
+
+  /* --- zoom modal -------------------------------------------------------- */
+  /* A native <dialog>: Escape, the backdrop, focus containment and the top layer
+     are all platform behaviour, and none of it is worth reimplementing. */
+  .modal {
+    /* Wider than the page's own 1400px column, or the "enlarged" chart comes out
+       narrower than the one it zoomed -- measured 1043px against 1311px inline. */
+    width: min(1600px, 97vw); max-height: 92vh; overflow: auto;
+    padding: .95rem 1.1rem 1.1rem; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: 0 18px 50px rgb(0 0 0 / .32);
+  }
+  .modal::backdrop { background: rgb(0 0 0 / .5); }
+  .modalhead { display: flex; align-items: baseline; justify-content: space-between;
+    gap: 1rem; flex-wrap: wrap; margin-bottom: .6rem; }
+  .modalhead h2 { margin: 0; font-size: 1rem; }
+  .modalhead .sub { display: block; font-weight: 400; font-size: .8rem;
+    color: var(--muted); margin-top: .15rem; }
+  .modalacts { display: flex; gap: .4rem; align-items: center; }
+  .modalfoot { margin: .7rem 0 0; font-size: .78rem; color: var(--muted); }
 
   footer { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
     font-size: .82rem; color: var(--muted); }
@@ -239,19 +294,29 @@
 <body>
 <div class="wrap">
 
-  <header>
-    <h1>spotfloor</h1>
-    <p class="lede">
-      AWS EC2 spot prices compared <em>across regions</em>, with {{ config.history_days }}-day
-      history. Every price names the availability zone it came from — you launch into
-      a zone, not into a region.
-    </p>
-    <p class="meta">
-      Data fetched <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> ·
-      {{ entries | length }} rows · {{ regions_seen | length }} regions ·
-      {{ types_seen | length }} instance types ·
-      {% if snapshot %}static snapshot{% else %}live, refreshes every 5&nbsp;min{% endif %}
-    </p>
+  <header class="head">
+    <div>
+      <h1>spotfloor</h1>
+      <p class="lede">
+        AWS EC2 spot prices compared <em>across regions</em>, with {{ config.history_days }}-day
+        history. Every price names the availability zone it came from — you launch into
+        a zone, not into a region.
+      </p>
+      <p class="claim">
+        <span class="pill">availability: unknown</span>
+        AWS publishes no availability, so no row here claims any. This compares
+        <strong>price</strong> only.
+        <a href="#why-unknown">Why — and what “price moves” is instead</a>
+      </p>
+      <p class="meta">
+        Data fetched <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> ·
+        {{ entries | length }} rows · {{ regions_seen | length }} regions ·
+        {{ types_seen | length }} instance types ·
+        {% if snapshot %}static snapshot{% else %}live, refreshes every 5&nbsp;min{% endif %}
+      </p>
+    </div>
+    <button type="button" class="btn iconbtn" id="theme"
+      title="Switch between light and dark" aria-label="Switch between light and dark">◐</button>
   </header>
 
   {% if snapshot %}
@@ -265,8 +330,8 @@
   </div>
   {% endif %}
 
-  <details class="callout">
-    <summary>Availability is <code>unknown</code> on every row — that is the honest answer</summary>
+  <details class="callout" id="why-unknown">
+    <summary>Why availability is <code>unknown</code>, and what “price moves” measures</summary>
     <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
     is computed against <em>the calling account's</em> quota and history — so a score
     fetched with this app's credentials describes that account, not your odds of getting
@@ -314,8 +379,11 @@
   <section class="card chartcard">
     <div class="charthead">
       <h2>Price over {{ config.history_days }} days — $/hr</h2>
-      <span class="hint">Tick rows below to plot them, or use
-        <strong>⇄</strong> on a row to compare that instance across every region.</span>
+      <span class="hint">Click rows below to plot them, <strong>⇄</strong> to compare one
+        instance across every region{% if not snapshot %}, <strong>⟳</strong> to refetch
+        just that row{% endif %}. Any sparkline opens the full chart.</span>
+      <button type="button" class="btn" id="enlarge"
+        title="Open the chart full size">⤢ Enlarge</button>
     </div>
     <div id="plot"></div>
     <div class="legend" id="legend"></div>
@@ -325,17 +393,24 @@
     <table id="grid">
       <thead>
         <tr>
-          <th class="colsel" style="width:34px"><span class="cell" title="Plot">▤</span></th>
-          <th class="sortable" data-key="type" style="width:132px"><span class="cell">Instance <span class="arrow">↕</span></span></th>
+          <th class="colsel" style="width:58px"><span class="cell"
+            title="Tick to plot this row on the chart above">Plot</span></th>
+          <th class="sortable" data-key="type" style="width:142px"><span class="cell">Instance <span class="arrow">↕</span></span></th>
           <th class="sortable" data-key="region" style="width:130px"><span class="cell">Region <span class="arrow">↕</span></span></th>
-          <th class="num sortable" data-key="price" style="width:94px"><span class="cell">$/hr <span class="arrow">↑</span></span></th>
-          <th style="width:140px"><span class="cell">Cheapest zone</span></th>
-          <th class="num sortable" data-key="spread" style="width:100px"><span class="cell">AZ spread <span class="arrow">↕</span></span></th>
-          <th style="width:180px"><span class="cell">Spec</span></th>
-          <th class="num sortable" data-key="pergpu" style="width:104px"><span class="cell">$/GPU·hr <span class="arrow">↕</span></span></th>
-          <th style="width:88px"><span class="cell">Avail.</span></th>
-          <th class="num sortable" data-key="moves" style="width:108px"><span class="cell">Price moves <span class="arrow">↕</span></span></th>
-          <th style="width:186px"><span class="cell">Last {{ config.history_days }}d</span></th>
+          <th class="num sortable" data-key="price" style="width:98px"><span class="cell">$/hr<span
+            class="q" title="Spot price per instance-hour, Linux/UNIX, taken from the cheapest availability zone in this region.">?</span> <span class="arrow">↑</span></span></th>
+          <th style="width:168px"><span class="cell">Cheapest zone<span
+            class="q" title="The zone the price above came from, and how many zones were observed in this region.">?</span></span></th>
+          <th class="num sortable" data-key="spread" style="width:104px"><span class="cell">AZ spread<span
+            class="q" title="How much dearer the priciest zone in this region is than the cheapest one. A big spread means a regional average would mislead you.">?</span> <span class="arrow">↕</span></span></th>
+          <th style="width:158px"><span class="cell">Spec<span
+            class="q" title="vCPUs, memory, and GPUs. Hardware does not vary by region — only price does.">?</span></span></th>
+          <th class="num sortable" data-key="pergpu" style="width:112px"><span class="cell">$ per GPU<span
+            class="q" title="Price per GPU per hour: the $/hr above divided by the number of GPUs. Lets you compare accelerator cost across instance sizes — a 8-GPU box at $20/hr is cheaper per GPU than a 1-GPU box at $3/hr. Dash means the instance type has no GPU.">?</span> <span class="arrow">↕</span></span></th>
+          <th class="num sortable" data-key="moves" style="width:134px"><span class="cell">Price moves<span
+            class="q" title="How many times AWS changed this price in the window, with its coefficient of variation. A hint that a zone is contended — NOT an availability or fulfillment signal.">?</span> <span class="arrow">↕</span></span></th>
+          <th style="width:186px"><span class="cell">Last {{ config.history_days }}d<span
+            class="q" title="Cheapest-zone price over the window. A break in the line is a bucket with no observation, never a zero.">?</span></span></th>
         </tr>
       </thead>
       <tbody>
@@ -351,8 +426,11 @@
             data-moves="{{ e.row.price_changes if e.row.price_changes is not none else -1 }}">
           <td class="colsel"><input type="checkbox" class="plotbox"
               aria-label="Plot {{ e.row.instance_type }} in {{ e.row.region }}"></td>
-          <td class="type">{{ e.row.instance_type }}<button type="button" class="cmp"
-              title="Plot {{ e.row.instance_type }} across all regions">⇄</button></td>
+          <td class="type">{{ e.row.instance_type }}<span class="rowacts"
+              ><button type="button" class="cmp"
+                title="Plot {{ e.row.instance_type }} across all regions">⇄</button
+              >{% if not snapshot %}<button type="button" class="rescan"
+                title="Query AWS for just {{ e.row.instance_type }} in {{ e.row.region }} — 1 region, seconds, and nothing else touched">⟳</button>{% endif %}</span></td>
           <td>{{ e.row.region }}</td>
           <td class="num price">${{ '%.4f' % e.row.cheapest_usd_hr }}</td>
           <td class="dim">{{ e.row.cheapest_zone }}
@@ -379,7 +457,6 @@
               <span class="dim" title="This instance type has no GPU.">—</span>
             {% endif %}
           </td>
-          <td><span class="pill">{{ e.row.availability }}</span></td>
           <td class="num">
             {% if e.row.price_changes is none %}
               <span class="dim" title="No history in the window; not computed.">n/a</span>
@@ -391,17 +468,40 @@
               {% endif %}
             {% endif %}
           </td>
-          <td>{{ e.spark | safe }}</td>
+          <td class="sparkcell" title="Click for the full chart">{{ e.spark | safe }}</td>
         </tr>
       {% endfor %}
       </tbody>
     </table>
+    <div class="empty" id="norows" hidden>
+      <p><strong>No rows match these filters.</strong></p>
+      <p>Widen the selection, or press <em>Clear</em>.</p>
+    </div>
   </div>
   {% else %}
   <div class="card"><div class="empty">
     <p><strong>No observations yet.</strong></p>
     <p>Run a scan: <code>uv run python scripts/scan.py --backfill</code></p>
   </div></div>
+  {% endif %}
+
+  {% if entries %}
+  <dialog class="modal" id="zoom" aria-labelledby="zoomtitle">
+    <div class="modalhead">
+      <h2 id="zoomtitle">Price history<span class="sub" id="zoomsub"></span></h2>
+      <div class="modalacts">
+        <button type="button" class="btn" id="zoomall">⇄ Compare all regions</button>
+        <button type="button" class="btn iconbtn" id="zoomclose"
+          title="Close" aria-label="Close">✕</button>
+      </div>
+    </div>
+    <div id="zoomplot"></div>
+    <div class="legend" id="zoomlegend"></div>
+    <p class="modalfoot">
+      {{ config.history_days }} days, hourly buckets, cheapest zone per bucket.
+      A break in a line is a bucket with no observation — never a zero.
+    </p>
+  </dialog>
   {% endif %}
 
   <div class="tip" id="tip" hidden></div>
@@ -429,6 +529,36 @@
 
 </div>
 
+<script>
+/* Theme toggle. Lives outside the chart script because the button ships even when
+   there are no rows to chart. Chart series colours are resolved to hex at draw
+   time, so a theme change has to redraw -- hence the event rather than a CSS-only
+   swap. */
+(function () {
+  var root = document.documentElement;
+  var btn = document.getElementById('theme');
+  var media = matchMedia('(prefers-color-scheme: dark)');
+
+  function isDark() {
+    return root.dataset.theme ? root.dataset.theme === 'dark' : media.matches;
+  }
+  function paint() {
+    btn.textContent = isDark() ? '☀' : '☾';
+    btn.title = 'Switch to ' + (isDark() ? 'light' : 'dark');
+    btn.setAttribute('aria-label', btn.title);
+  }
+  function changed() { paint(); document.dispatchEvent(new CustomEvent('sf-theme')); }
+
+  btn.addEventListener('click', function () {
+    root.dataset.theme = isDark() ? 'light' : 'dark';
+    try { localStorage.setItem('sf-theme', root.dataset.theme); } catch (e) {}
+    changed();
+  });
+  media.addEventListener('change', changed);
+  paint();
+})();
+</script>
+
 {% if entries %}
 <script id="chartdata" type="application/json">{{ chart_data | safe }}</script>
 <script>
@@ -447,6 +577,19 @@
   var legendEl = document.getElementById('legend');
   var tip = document.getElementById('tip');
   var gpuonly = document.getElementById('gpuonly');
+  var norows = document.getElementById('norows');
+  var zoom = document.getElementById('zoom');
+  var zoomPlot = document.getElementById('zoomplot');
+  var zoomLegend = document.getElementById('zoomlegend');
+  var zoomSub = document.getElementById('zoomsub');
+
+  // One renderer, two destinations. The modal is a bigger viewport onto the same
+  // chart, not a second implementation of it -- a duplicate would drift.
+  function host() { return zoom.open ? zoomPlot : plot; }
+  function legendHost() { return zoom.open ? zoomLegend : legendEl; }
+  function chartHeight() {
+    return zoom.open ? Math.max(320, Math.min(560, window.innerHeight - 300)) : 300;
+  }
 
   var selectedTypes = new Set();
   var selectedRegions = new Set();
@@ -491,12 +634,27 @@
       input.placeholder = selected.size ? 'Add more…' : input.dataset.ph;
     }
 
+    var active = -1;   // keyboard cursor into the visible menu items
+
+    function items() {
+      return Array.prototype.slice.call(menu.querySelectorAll('div:not(.none)'));
+    }
+
+    function highlight(next) {
+      var list = items();
+      if (!list.length) { return; }
+      active = (next + list.length) % list.length;
+      list.forEach(function (el, i) { el.classList.toggle('hi', i === active); });
+      list[active].scrollIntoView({ block: 'nearest' });
+    }
+
     function renderMenu() {
       var term = input.value.trim().toLowerCase();
       var matches = options.filter(function (o) {
         return !term || o.toLowerCase().indexOf(term) !== -1;
       });
       menu.innerHTML = '';
+      active = -1;
       if (!matches.length) {
         var none = document.createElement('div');
         none.className = 'none';
@@ -532,16 +690,21 @@
     input.addEventListener('focus', function () { menu.hidden = false; renderMenu(); });
     input.addEventListener('input', function () { menu.hidden = false; renderMenu(); });
     input.addEventListener('keydown', function (event) {
-      if (event.key === 'Escape') { menu.hidden = true; input.blur(); }
+      if (event.key === 'Escape') { menu.hidden = true; input.blur(); return; }
+      if (event.key === 'ArrowDown') { event.preventDefault(); highlight(active + 1); return; }
+      if (event.key === 'ArrowUp') { event.preventDefault(); highlight(active - 1); return; }
       if (event.key === 'Backspace' && !input.value && selected.size) {
         var last = Array.from(selected).pop();
         selected.delete(last);
         renderChips(); renderMenu(); onChange();
+        return;
       }
       if (event.key === 'Enter') {
         event.preventDefault();
-        var first = menu.querySelector('div:not(.none)');
-        if (first) { first.dispatchEvent(new MouseEvent('mousedown')); }
+        // Whatever the arrow keys landed on, falling back to the top match so a
+        // type-then-Enter still works without touching the arrows.
+        var pick = items()[active < 0 ? 0 : active];
+        if (pick) { pick.dispatchEvent(new MouseEvent('mousedown')); }
       }
     });
     document.addEventListener('mousedown', function (event) {
@@ -566,6 +729,13 @@
     count.textContent = shown === rows.length
       ? rows.length + ' rows'
       : shown + ' of ' + rows.length + ' rows';
+    // Filtering to nothing used to leave a header over blank space, which reads as
+    // a broken page rather than an over-narrow filter.
+    norows.hidden = shown > 0;
+    // The scan button labels itself from the visible rows, and it only exists off
+    // the snapshot -- so this announces rather than calls, the same way the theme
+    // toggle tells the chart to redraw.
+    document.dispatchEvent(new CustomEvent('sf-filter'));
   }
 
   // ---------------------------------------------------------------- the chart
@@ -605,23 +775,42 @@
     return new Date(Date.parse(DATA.start) + index * DATA.step_s * 1000);
   }
 
+  var MONTHS = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  function stamp(d) {
+    // "30 Jul, 14:00 UTC" reads faster than an ISO string and is ~8 characters
+    // narrower, which is most of why the old tooltip was so wide.
+    return d.getUTCDate() + ' ' + MONTHS[d.getUTCMonth()] + ', '
+      + String(d.getUTCHours()).padStart(2, '0') + ':'
+      + String(d.getUTCMinutes()).padStart(2, '0') + ' UTC';
+  }
+
   var geom = null;   // kept for hit-testing on hover
 
   function drawChart() {
     var active = plotted.filter(function (k) { return !hidden.has(k); });
-    legendEl.innerHTML = '';
+    var into = host();
 
     if (!plotted.length) {
-      plot.innerHTML = '<div class="plot-empty">Tick a row below to plot its price '
-        + 'history, or press <strong>⇄</strong> on a row to compare that instance '
-        + 'across every region.</div>';
+      into.innerHTML = '<div class="plot-empty">Click any row below to plot its price '
+        + 'history, press <strong>⇄</strong> to compare that instance across every '
+        + 'region, or click a sparkline for the full chart.</div>';
       geom = null;
       renderLegend();
       return;
     }
 
-    var W = Math.max(plot.clientWidth || 900, 360);
-    var H = 300, padL = 62, padR = 14, padT = 12, padB = 30;
+    if (!active.length) {
+      // Every series toggled off. Drawing an axis over no data invents a $0–$1
+      // range that looks like real, very cheap data.
+      into.innerHTML = '<div class="plot-empty">Every series is hidden. '
+        + 'Click a legend entry to bring it back.</div>';
+      geom = null;
+      renderLegend();
+      return;
+    }
+
+    var W = Math.max(into.clientWidth || 900, 360);
+    var H = chartHeight(), padL = 62, padR = 14, padT = 12, padB = 30;
     var iw = W - padL - padR, ih = H - padT - padB;
 
     var lo = Infinity, hi = -Infinity;
@@ -691,7 +880,7 @@
       + (padT + ih) + '" stroke="var(--muted)" stroke-width="1" opacity="0"/>');
     svg.push('<g class="dots"></g>');
     svg.push('</svg>');
-    plot.innerHTML = svg.join('');
+    into.innerHTML = svg.join('');
 
     geom = { W: W, H: H, padL: padL, padR: padR, padT: padT, ih: ih, iw: iw,
              n: n, lo: lo, hi: hi, x: x, y: y, active: active };
@@ -702,7 +891,11 @@
   function renderLegend() {
     // A legend is always present for >=2 series, and identity is never colour
     // alone: every entry carries its text label in ink.
+    // Both hosts are cleared: leaving a populated legend in the closed one shows a
+    // stale series list the next time it opens.
     legendEl.innerHTML = '';
+    zoomLegend.innerHTML = '';
+    var into = legendHost();
     if (!plotted.length) { return; }
     plotted.forEach(function (key) {
       var values = DATA.series[key] || [];
@@ -722,8 +915,15 @@
         if (hidden.has(key)) { hidden.delete(key); } else { hidden.add(key); }
         drawChart();
       });
-      legendEl.appendChild(button);
+      into.appendChild(button);
     });
+    if (plotted.length >= MAX_SERIES) {
+      // The checkbox just going dead is a dead end. Say why.
+      var note = document.createElement('span');
+      note.className = 'val';
+      note.textContent = MAX_SERIES + ' series is the maximum — remove one to add another';
+      into.appendChild(note);
+    }
   }
 
   function wireHover() {
@@ -738,8 +938,9 @@
       tip.hidden = true;
     }
 
-    svg.addEventListener('mouseleave', leave);
-    svg.addEventListener('mousemove', function (event) {
+    // Pointer events, not mouse events: the chart sets `touch-action: none`, so a
+    // finger drag scrubs the series instead of scrolling past them.
+    function move(event) {
       var box = svg.getBoundingClientRect();
       var scale = geom.W / box.width;
       var px = (event.clientX - box.left) * scale;
@@ -762,22 +963,23 @@
           + '" stroke="var(--panel)" stroke-width="2"/>';
       }).join('');
 
-      var when = bucketDate(i);
-      tip.innerHTML = '<div class="when">'
-        + when.toISOString().slice(0, 16).replace('T', ' ') + ' UTC</div><table>'
+      tip.innerHTML = '<div class="when">' + stamp(bucketDate(i)) + '</div>'
         + hits.sort(function (a, b) { return b.v - a.v; }).map(function (h) {
-            return '<tr><td><span class="sw" style="background:' + colorFor(h.key)
-              + '"></span>' + h.key.replace('|', ' · ') + '</td><td class="p">'
-              + money(h.v) + '</td></tr>';
-          }).join('') + '</table>';
+            return '<div class="r"><span class="sw" style="background:'
+              + colorFor(h.key) + '"></span>' + h.key.replace('|', ' · ')
+              + '<b>' + money(h.v) + '</b></div>';
+          }).join('');
       tip.hidden = false;
       var tb = tip.getBoundingClientRect();
-      var left = event.clientX + 14;
-      if (left + tb.width > window.innerWidth - 8) { left = event.clientX - tb.width - 14; }
-      var top = Math.min(event.clientY + 14, window.innerHeight - tb.height - 8);
+      var left = event.clientX + 12;
+      if (left + tb.width > window.innerWidth - 8) { left = event.clientX - tb.width - 12; }
+      var top = Math.min(event.clientY + 12, window.innerHeight - tb.height - 8);
       tip.style.left = Math.max(8, left) + 'px';
       tip.style.top = Math.max(8, top) + 'px';
-    });
+    }
+
+    svg.addEventListener('pointerleave', leave);
+    svg.addEventListener('pointermove', move);
   }
 
   // ---------------------------------------------------------------- plot selection
@@ -809,44 +1011,142 @@
     row.querySelector('.plotbox').addEventListener('change', function (event) {
       togglePlot(row.dataset.key, event.target.checked);
     });
+    // A 13px checkbox is a poor hit target for the primary action of the table, so
+    // the row itself is the button. Real controls inside it keep their own click,
+    // and an in-progress text selection is not treated as one.
+    row.addEventListener('click', function (event) {
+      if (event.target.closest('input, button, a')) { return; }
+      if (String(window.getSelection ? window.getSelection() : '')) { return; }
+      togglePlot(row.dataset.key, plotted.indexOf(row.dataset.key) === -1);
+    });
     row.querySelector('.cmp').addEventListener('click', function () {
-      // "Compare this instance across regions" -- the question the tool exists for.
-      var type = row.dataset.type;
-      var keys = rows.filter(function (r) { return r.dataset.type === type; })
-        .sort(function (a, b) {
-          return parseFloat(a.dataset.price) - parseFloat(b.dataset.price);
-        })
-        .slice(0, MAX_SERIES)
-        .map(function (r) { return r.dataset.key; });
-      plotted = keys;
-      hidden.clear();
-      selectedTypes.clear(); selectedTypes.add(type);
-      typeMS.refresh(); applyFilters(); syncBoxes(); drawChart();
-      document.getElementById('plot').scrollIntoView({ behavior: 'smooth', block: 'center' });
+      compareAcrossRegions(row.dataset.type);
+      if (!zoom.open) {
+        plot.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    });
+    row.querySelector('.sparkcell').addEventListener('click', function (event) {
+      // The sparkline is a 168px thumbnail. Clicking it asks to see it properly,
+      // not to toggle the row, so the row handler does not also fire.
+      event.stopPropagation();
+      openZoom(row);
     });
   });
 
+  // "Compare this instance across regions" -- the question the tool exists for.
+  function compareAcrossRegions(type) {
+    plotted = rows.filter(function (r) { return r.dataset.type === type; })
+      .sort(function (a, b) {
+        return parseFloat(a.dataset.price) - parseFloat(b.dataset.price);
+      })
+      .slice(0, MAX_SERIES)
+      .map(function (r) { return r.dataset.key; });
+    hidden.clear();
+    selectedTypes.clear(); selectedTypes.add(type);
+    typeMS.refresh(); applyFilters(); syncBoxes(); drawChart();
+    describeZoom();
+  }
+
+  // ---------------------------------------------------------------- zoom modal
+  function describeZoom() {
+    if (!plotted.length) { zoomSub.textContent = ''; return; }
+    var types = {};
+    plotted.forEach(function (k) { types[k.split('|')[0]] = 1; });
+    var names = Object.keys(types);
+    zoomSub.textContent = (names.length === 1 ? names[0] : names.length + ' instance types')
+      + ' · ' + plotted.length + ' series';
+  }
+
+  function openZoom(row) {
+    if (row) {
+      plotted = [row.dataset.key];
+      hidden.clear();
+      syncBoxes();
+    }
+    describeZoom();
+    // The tooltip is `position: fixed` in the normal stacking context, so it would
+    // paint *under* the dialog's backdrop. Moving it into the dialog puts it in the
+    // same top layer; it goes back on close.
+    zoom.appendChild(tip);
+    zoom.showModal();
+    drawChart();   // after showModal: the host has no measurable width until then
+  }
+
+  zoom.addEventListener('close', function () {
+    tip.hidden = true;
+    document.body.appendChild(tip);
+    drawChart();   // back to the inline host at its own size
+  });
+  document.getElementById('zoomclose').addEventListener('click', function () {
+    zoom.close();
+  });
+  // Enlarges whatever is already plotted -- passing no row keeps the selection, where
+  // a sparkline click replaces it with that one series.
+  document.getElementById('enlarge').addEventListener('click', function () {
+    openZoom(null);
+  });
+  document.getElementById('zoomall').addEventListener('click', function () {
+    if (plotted.length) { compareAcrossRegions(plotted[0].split('|')[0]); }
+  });
+  // Clicking the backdrop closes it. The dialog element itself covers the panel,
+  // so a click that lands on it and not on a child is a click outside.
+  zoom.addEventListener('click', function (event) {
+    if (event.target === zoom) { zoom.close(); }
+  });
+
   // ---------------------------------------------------------------- sorting
-  function sort(key) {
-    if (sortKey === key) { sortDir = -sortDir; } else { sortKey = key; sortDir = 1; }
-    var numeric = key !== 'type' && key !== 'region';
-    rows.sort(function (a, b) {
-      var x = a.dataset[key], yv = b.dataset[key];
-      return numeric ? (parseFloat(x) - parseFloat(yv)) * sortDir
-                     : x.localeCompare(yv) * sortDir;
-    });
-    rows.forEach(function (row) { tbody.appendChild(row); });
+  function paintSortIndicators() {
     Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
       var arrow = th.querySelector('.arrow');
-      if (arrow) {
-        arrow.textContent = th.dataset.key === sortKey ? (sortDir > 0 ? '↑' : '↓') : '↕';
-      }
+      if (!arrow) { return; }
+      var on = th.dataset.key === sortKey;
+      arrow.textContent = on ? (sortDir > 0 ? '↑' : '↓') : '↕';
+      th.setAttribute('aria-sort', on ? (sortDir > 0 ? 'ascending' : 'descending') : 'none');
     });
+  }
+
+  function sort(key) {
+    var numeric = key !== 'type' && key !== 'region';
+    if (sortKey === key) {
+      sortDir = -sortDir;
+    } else {
+      sortKey = key;
+      // First click on a rank-like column shows the extreme you came for: the
+      // biggest spread, the most price moves. Price and names still open ascending.
+      sortDir = (numeric && key !== 'price' && key !== 'pergpu') ? -1 : 1;
+    }
+    rows.sort(function (a, b) {
+      if (!numeric) {
+        return a.dataset[key].localeCompare(b.dataset[key]) * sortDir;
+      }
+      var av = parseFloat(a.dataset[key]), bv = parseFloat(b.dataset[key]);
+      // -1 is the "not applicable" sentinel: no GPU, or no history in the window.
+      // It is not a small number. Sorting it as one puts 500 dashes ahead of every
+      // real value, which is what made "$ per GPU" look broken when clicked.
+      if ((av < 0) !== (bv < 0)) { return av < 0 ? 1 : -1; }
+      return (av - bv) * sortDir;
+    });
+    rows.forEach(function (row) { tbody.appendChild(row); });
+    paintSortIndicators();
   }
 
   Array.prototype.forEach.call(table.tHead.rows[0].cells, function (th) {
     if (!th.dataset.key) { return; }
-    th.querySelector('.cell').addEventListener('click', function () { sort(th.dataset.key); });
+    th.tabIndex = 0;
+    // The whole header cell is the hit target. Listening on the inner span left the
+    // cell's padding dead even though `th.sortable` shows a pointer cursor, and it
+    // also meant a resize drag sorted the column: the grip lives inside that span,
+    // and pointerdown+pointerup on it fire a click.
+    th.addEventListener('click', function (event) {
+      if (event.target.closest('.grip')) { return; }
+      sort(th.dataset.key);
+    });
+    th.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        sort(th.dataset.key);
+      }
+    });
   });
 
   // ---------------------------------------------------------------- column resize
@@ -900,6 +1200,7 @@
     clearTimeout(resizeTimer);
     resizeTimer = setTimeout(drawChart, 150);
   });
+  document.addEventListener('sf-theme', drawChart);
 
   {% if not snapshot %}
   // --- Scan now -------------------------------------------------------------
@@ -908,10 +1209,12 @@
   // sorting, resizing and the chart all still work there -- they only touch data
   // already in the document.
   //
-  // Scans exactly what is on screen. Narrowing is about rate limits and latency,
-  // not cost: EC2 describe calls are free, but throttles are per region.
+  // Scans exactly what is asked for -- the visible rows, or a single row. Narrowing
+  // is about rate limits and latency, not cost: EC2 describe calls are free, but
+  // throttles are per region and a 17-region sweep is 6.7s against one region's 2.6s.
   var scan = document.getElementById('scan');
   var status = document.getElementById('scanstatus');
+  var scanning = false;   // the server refuses concurrent scans with 409; don't send one
 
   function say(text, isError) {
     status.hidden = false;
@@ -919,7 +1222,11 @@
     status.classList.toggle('err', !!isError);
   }
 
-  scan.addEventListener('click', function () {
+  function plural(n, word) { return n + ' ' + word + (n === 1 ? '' : 's'); }
+
+  // Everything currently past the filters. This is what "Scan now" means, and the
+  // button says so before it is clicked rather than after.
+  function visibleScope() {
     var types = {}, regions = {};
     rows.forEach(function (row) {
       if (!row.classList.contains('hidden')) {
@@ -927,17 +1234,40 @@
         regions[row.dataset.region] = 1;
       }
     });
-    var t = Object.keys(types), r = Object.keys(regions);
-    if (!t.length) { say('Nothing is shown to scan.', true); return; }
+    return { types: Object.keys(types), regions: Object.keys(regions) };
+  }
 
-    scan.disabled = true;
-    scan.textContent = 'Scanning…';
-    say('Querying AWS for ' + t.length + ' instance type(s) across ' + r.length + ' region(s)…');
+  function paintScanScope() {
+    if (scanning) { return; }
+    var s = visibleScope();
+    scan.disabled = !s.types.length;
+    scan.textContent = s.types.length
+      ? 'Scan ' + s.types.length + '×' + s.regions.length
+      : 'Scan now';
+    scan.title = s.types.length
+      ? 'Query AWS for ' + plural(s.types.length, 'instance type') + ' across '
+        + plural(s.regions.length, 'region') + ' — only the rows shown below'
+      : 'Nothing is shown to scan';
+  }
+  document.addEventListener('sf-filter', paintScanScope);
+
+  // One request path for both entry points. `btn` is whichever control was pressed;
+  // it goes disabled for the round trip so a second click cannot race the first.
+  function runScan(types, regions, btn, busyLabel) {
+    if (scanning) { say('A scan is already running.', true); return; }
+    if (!types.length) { say('Nothing is shown to scan.', true); return; }
+
+    scanning = true;
+    var was = btn.textContent;
+    btn.disabled = true;
+    btn.textContent = busyLabel;
+    say('Querying AWS for ' + plural(types.length, 'instance type') + ' across '
+      + plural(regions.length, 'region') + '…');
 
     fetch('api/refresh', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ instance_types: t, regions: r })
+      body: JSON.stringify({ instance_types: types, regions: regions })
     }).then(function (response) {
       return response.json().then(function (body) {
         if (!response.ok) { throw new Error(body.detail || response.statusText); }
@@ -951,14 +1281,32 @@
       setTimeout(function () { location.reload(); }, 1100);
     }).catch(function (error) {
       say('Scan failed: ' + error.message, true);
-      scan.disabled = false;
-      scan.textContent = 'Scan now';
+      scanning = false;
+      btn.disabled = false;
+      btn.textContent = was;
+      paintScanScope();
+    });
+  }
+
+  scan.addEventListener('click', function () {
+    var s = visibleScope();
+    runScan(s.types, s.regions, scan, 'Scanning…');
+  });
+
+  // Per-row rescan: one type in one region. The cheapest possible question to ask
+  // AWS, for when you are watching a single price and don't want to re-sweep 17
+  // regions to see it move.
+  rows.forEach(function (row) {
+    row.querySelector('.rescan').addEventListener('click', function (event) {
+      event.stopPropagation();   // the row click plots; this one refetches
+      runScan([row.dataset.type], [row.dataset.region], event.currentTarget, '…');
     });
   });
   {% endif %}
 
   applyFilters();
   syncBoxes();
+  paintSortIndicators();
   drawChart();
 })();
 </script>

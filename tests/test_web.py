@@ -106,11 +106,28 @@ def test_the_page_renders(client) -> None:
 
 
 def test_availability_is_rendered_as_an_explicit_unknown(client) -> None:
-    """Never a blank cell. `unknown` must be visible on the page as a word."""
+    """`unknown` must be visible on the page as a word, never an empty space.
+
+    It no longer needs to be a table column: the value is constant on every row
+    forever, so 646 identical cells taught the reader nothing and cost a column of
+    width. The constraint is that the claim is *stated*, not that it is repeated.
+    """
     body = client.get("/").text
-    assert "unknown" in body
+    assert "availability: unknown" in body
     # And the reason is stated, not left for the reader to infer.
     assert "Spot Placement Score" in body
+
+
+def test_the_availability_claim_is_not_hidden_behind_a_disclosure(client) -> None:
+    """A collapsed <details> is a claim the reader never sees.
+
+    Dropping the per-row column is only honest if the statement is always visible,
+    so it has to sit ahead of the first disclosure widget on the page.
+    """
+    body = client.get("/").text
+    assert body.index("availability: unknown") < body.index("<details class="), (
+        "the availability caveat sits inside a collapsed block"
+    )
 
 
 def test_the_page_names_the_zone_behind_every_regional_price(client) -> None:
@@ -304,6 +321,68 @@ def test_rows_offer_a_compare_across_regions_control(client) -> None:
     body = client.get("/").text
     assert 'class="cmp"' in body
     assert "across all regions" in body
+
+
+# --- columns that have to explain themselves ---------------------------------
+
+
+def test_every_derived_column_says_what_it_means(client) -> None:
+    """A derived number nobody can name is a number nobody can use.
+
+    `$ per GPU` and `Price moves` are computed, not reported by AWS, so the header
+    carries the definition rather than expecting the reader to infer it.
+    """
+    body = client.get("/").text
+    assert "$ per GPU" in body
+    assert "divided by the number of GPUs" in body
+    assert "NOT an availability or fulfillment signal" in body
+    # Every ambiguous header ships a help marker, not just the two worst.
+    assert body.count('class="q"') >= 6
+
+
+def test_the_whole_header_cell_sorts_but_the_resize_grip_does_not(client) -> None:
+    """Another source-level tripwire for a bug that shipped.
+
+    The click listener sat on the inner ``.cell`` span, which left the header cell's
+    padding dead even though ``th.sortable`` shows a pointer cursor -- and because the
+    resize grip lives *inside* that span, finishing a column drag also re-sorted the
+    column you were only trying to widen.
+    """
+    body = client.get("/").text
+    assert "th.addEventListener('click'" in body, "the header listener is back on a child"
+    assert "event.target.closest('.grip')" in body, "a resize drag will sort the column"
+
+
+def test_not_applicable_never_sorts_as_a_small_number(client) -> None:
+    """A source-level tripwire for a bug that shipped once.
+
+    `$ per GPU` and `Price moves` use -1 for "not applicable" (no GPU, no history).
+    Sorting that as a number puts every dash ahead of every real value, so the
+    comparator has to special-case it in both directions. The behaviour itself is
+    exercised by driving the extracted comparator; this only fails if the guard is
+    deleted.
+    """
+    body = client.get("/").text
+    assert "(av < 0) !== (bv < 0)" in body, "the sentinel guard is gone from the sort"
+
+
+def test_filtering_to_nothing_explains_itself(client) -> None:
+    """A sticky header over blank space reads as a broken page, not a narrow filter."""
+    body = client.get("/").text
+    assert 'id="norows"' in body
+    assert "No rows match these filters" in body
+
+
+def test_the_page_ships_a_theme_toggle_that_redraws_the_chart(client) -> None:
+    """The dark rules were keyed off [data-theme] and nothing ever set it.
+
+    Series colours are resolved to hex when the SVG is built, so a CSS-only swap
+    would leave the lines in the other theme's palette -- hence the redraw hook.
+    """
+    body = client.get("/").text
+    assert 'id="theme"' in body
+    assert "sf-theme" in body
+    assert "document.addEventListener('sf-theme', drawChart)" in body
 
 
 def test_the_chart_works_in_snapshot_mode_too(snapshot_client) -> None:
@@ -641,6 +720,49 @@ def test_the_live_page_does_offer_a_scan_button(client) -> None:
     body = client.get("/").text
     assert 'id="scan"' in body
     assert "Scan now" in body
+
+
+def test_every_row_can_be_rescanned_on_its_own(client) -> None:
+    """The narrowest possible question: one type, one region.
+
+    A full sweep of the watchlist is 17 regions and ~7s; a single row is one region
+    and ~2s. Watching one price move should not cost the other sixteen regions' rate
+    quota, so each row carries its own refetch control.
+    """
+    body = client.get("/").text
+    assert body.count('class="rescan"') == body.count('class="cmp"') > 0, (
+        "every row offers compare, so every row must also offer rescan"
+    )
+    # The handler must send a one-element scope, not the visible filter.
+    assert "runScan([row.dataset.type], [row.dataset.region]" in body
+
+
+def test_the_scan_button_states_its_scope_before_the_click(client) -> None:
+    """"Scan now" never said *what* it would scan, so "does this hit all 17 regions?"
+    could only be answered by clicking. The label is now derived from the visible
+    rows and repainted whenever the filters change."""
+    body = client.get("/").text
+    assert "function paintScanScope" in body
+    assert "document.addEventListener('sf-filter', paintScanScope)" in body
+    assert "new CustomEvent('sf-filter')" in body, "nothing tells the label to repaint"
+
+
+def test_a_snapshot_ships_no_per_row_rescan(snapshot_client) -> None:
+    """Same rule as the toolbar button: no server, so no control that pretends."""
+    body = snapshot_client.get("/").text
+    assert "rescan" not in body
+    assert "runScan" not in body
+
+
+def test_the_chart_can_be_enlarged_without_replacing_the_selection(client) -> None:
+    """Sparkline click zooms *that* row; the header control zooms what is plotted.
+
+    Without it the only route into the modal was a sparkline, which resets the
+    selection -- so a carefully built 6-series comparison could not be enlarged at all.
+    """
+    body = client.get("/").text
+    assert 'id="enlarge"' in body
+    assert "openZoom(null)" in body
 
 
 def test_a_page_load_does_not_fetch_from_providers(seeded) -> None:

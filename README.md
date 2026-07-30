@@ -34,8 +34,12 @@ deliberate — the sample exists to show you the interface, not to be a data sou
 | **Any instance family** | GPU, compute, memory, burstable, storage — not just GPUs |
 | **Availability** | always `unknown`, and [here's why](#the-one-thing-it-cannot-tell-you) |
 
-Multi-select filters with autocomplete, sortable and resizable columns, and a
-**Scan now** button that queries only the rows you're looking at.
+Multi-select filters with autocomplete, sortable and resizable columns, a light/dark
+toggle, and any sparkline (or **⤢ Enlarge**) opens the chart full size.
+
+The scan button says what it will scan before you click it — **Scan 40×17** means 40
+instance types across 17 regions, recomputed from whatever the filters leave visible.
+Each row also carries a **⟳** to refetch just that one type in that one region.
 
 ---
 
@@ -103,8 +107,9 @@ fails. It never prints secret material.
 
 The server polls every 5 minutes on its own. To scan on demand:
 
-**From the page** — filter to what you care about, click **Scan now**. It queries only
-the rows currently shown.
+**From the page** — the scan button is labelled with its own scope (**Scan 3×2** = 3
+types across 2 regions), so narrow the filters until it says what you want. For a single
+price, click **⟳** on that row: one type, one region, ~2s.
 
 **From the terminal:**
 
@@ -121,6 +126,7 @@ throttles are per region.
 
 | Scan | Time |
 |---|---|
+| 1 type × 1 region (one **⟳**) | 2.3s |
 | 2 types × 2 regions | 2.6s |
 | 40 types × 17 regions (2,003 quotes) | 6.7s |
 | 30-day backfill (172k segments) | ~35s |
@@ -174,7 +180,7 @@ uv run python scripts/serve.py --backfill                # dashboard
 uv run python scripts/scan.py --help                     # one-shot scan
 uv run python scripts/snapshot.py --out site --backfill   # static export
 
-uv run pytest -m "not live"    # 168 tests, no AWS needed
+uv run pytest -m "not live"    # 178 tests, no AWS needed
 uv run pytest                  # + live correctness gates
 ```
 

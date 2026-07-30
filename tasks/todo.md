@@ -125,6 +125,71 @@ with the real reason documented so nobody optimizes against an imaginary cost.
       so the page is full-depth on every run and frequent polling adds nothing.
 - [x] `--backfill` on both `serve.py` and `snapshot.py`
 
+## Phase I — UI/UX pass: say what things mean, and make clicks land ✅
+
+Triggered by three reports: *"what is GPU/HR & Availability?"*, *"the chart tooltip
+looks too huge and weird"*, and *"there are too many minute errors in use"*. Then a
+second batch: a modal for the 7-day chart, and per-instance scanning.
+
+- [x] **`Avail.` column deleted.** 646 identical `unknown` pills taught the reader
+      nothing and cost 88px. The claim now sits once in the header, always visible,
+      linking to the long version — which is where it used to be *collapsed*, and that
+      is precisely why the meaning was unknown.
+- [x] Every derived column carries a `?` with a native `title`: `$/hr`, `$ per GPU`
+      (renamed from `$/GPU·hr`), `Cheapest zone`, `AZ spread`, `Price moves`, `Spec`
+- [x] **Tooltip rebuilt** — was a `<table>` at .8rem with `min-width: 11rem` and a
+      20-char ISO timestamp. Now flex rows at .72rem with `30 Jul, 14:00 UTC`.
+      Measured in Chrome: **221×79px for 3 series.**
+- [x] `pointermove`/`pointerleave` instead of mouse events, so a finger scrubs the chart
+- [x] Whole row clickable to plot (a 13px checkbox was the primary action's hit target)
+- [x] Light/dark toggle; theme read in `<head>` so there is no wrong-theme flash, and a
+      `sf-theme` event so the chart *redraws* — series colours are resolved to hex at
+      draw time, so swapping CSS variables alone would leave the old palette
+- [x] Keyboard: sortable headers focusable + Enter/Space, `aria-sort`, arrow keys and
+      Backspace in the multi-selects
+- [x] Empty states that explain: no rows match, every series hidden, nothing plotted
+- [x] **Zoom modal** — native `<dialog>` + `showModal()`, so Escape, backdrop dismissal,
+      focus containment and the top layer are platform behaviour. `host()`/`legendHost()`/
+      `chartHeight()` switch destination so it is *one* renderer at two sizes, never a
+      second implementation that could drift. `⤢ Enlarge` keeps the current selection;
+      a sparkline click replaces it with that row.
+- [x] **Per-row `⟳` rescan** — one type, one region, **2.3s** measured live against
+      6.7s for the full watchlist. Needed no backend change: `POST /api/refresh` already
+      narrowed via `dataclasses.replace()` on the frozen config.
+- [x] **The scan button states its scope before the click** — `Scan 40×17`, recomputed
+      from the visible rows on every filter change, and disabled with
+      "Nothing is shown to scan" when the filters exclude everything.
+
+**Four real bugs, three of which only a browser could find.**
+
+1. *`$ per GPU` sorted 544 dashes ahead of every real value.* `-1` is the
+   "not applicable" sentinel and the comparator treated it as a small number. Guarded
+   with `(av < 0) !== (bv < 0)`; a test asserts the guard's source is still there.
+2. *Clicking a column header did nothing.* The listener was on the inner `.cell` span,
+   so the cell's padding was dead — while `th.sortable { cursor: pointer }` promised
+   otherwise. Found because a scripted `th.click()` left `aria-sort="none"`.
+3. *And finishing a resize drag re-sorted the column.* Same root cause from the other
+   side: the grip lives inside that span, and pointerdown+pointerup on it fire a click.
+   The listener moved to the `th` with the grip excluded — one fix for both.
+4. *"Enlarge" produced a chart 268px **narrower** than the one it enlarged.*
+   `width: min(1080px, 94vw)` against a page column of 1400px. Measured 1043px in the
+   modal vs 1311px inline; now `min(1600px, 97vw)`.
+
+**Verified in a real browser, without the extension.** The Chrome extension would not
+connect and chromedriver was three majors behind the installed Chrome, so
+`scratchpad/ui/drive.py` drives headless Chrome over its own DevTools protocol —
+`websockets` was already in the venv, so nothing was installed and nothing downloaded.
+**34 checks against the live 646-row page**, covering the modal, the tooltip's actual
+pixel size, the sort order, the theme redraw, and both scan buttons with `fetch` stubbed
+so no AWS quota is spent proving what the handler sends.
+
+**Two testing traps worth remembering.** `dialog.close()` fires its `close` event on a
+*queued task*, so reading the chart back in the same expression sees the pre-close state.
+And `Page.reload` returns *before* navigation starts: polling for "readyState complete"
+matches the old page and passes instantly, then the reload lands mid-test and silently
+resets state. That one cost an hour chasing a phantom bug in `paintScanScope`, and is why
+the reload helper stamps the page and waits for the stamp to disappear.
+
 ---
 
 ## Review

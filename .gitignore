@@ -28,6 +28,9 @@ site/
 # public/ IS committed: it is the sample snapshot GitHub Pages serves, generated
 # locally so no AWS credentials ever go near this repository.
 
+# Knowledge-graph build output (graphify) -- derived from the repo, rebuildable
+graphify-out/
+
 # OS / editor cruft
 .DS_Store
 .idea/

@@ -173,7 +173,23 @@ second batch: a modal for the 7-day chart, and per-instance scanning.
    The listener moved to the `th` with the grip excluded — one fix for both.
 4. *"Enlarge" produced a chart 268px **narrower** than the one it enlarged.*
    `width: min(1080px, 94vw)` against a page column of 1400px. Measured 1043px in the
-   modal vs 1311px inline; now `min(1600px, 97vw)`.
+   modal vs 1311px inline. Fixed twice — see below; the landing value is
+   `min(1600px, calc(100vw - 1.5rem))`.
+
+**Two more the first pass missed, found by re-running and by widening the net.**
+
+5. *The width fix was only half a fix.* `min(1600px, 97vw)` beat the inline chart below
+   a 1227px viewport and lost above it — 5px **narrower** at 1400px, the size it was
+   verified at. The inline chart is `100vw - 74px` of *fixed* chrome, so a percentage
+   width crosses it at exactly one viewport; and below the 1600px cap what actually
+   binds is the UA stylesheet's `dialog { max-width: calc(100% - 6px - 2em) }`, not the
+   author rule. Now swept at 1280/1400/1512/1680/1920/2560: never narrower, 1.88×–2.21×
+   chart area. Real horizontal gain only exists above ~1450px; below that the win is
+   vertical, 300px → 560px.
+6. *`⤢ Enlarge` with nothing plotted opened a modal over the table its own empty state
+   pointed at* — "click any row below", covering the rows. The guard went into
+   `syncBoxes()`, the single function all five selection paths route through, so
+   `clear`, the filter path, and init are covered by one line instead of three.
 
 **Verified in a real browser, without the extension.** The Chrome extension would not
 connect and chromedriver was three majors behind the installed Chrome, so
@@ -181,7 +197,11 @@ connect and chromedriver was three majors behind the installed Chrome, so
 `websockets` was already in the venv, so nothing was installed and nothing downloaded.
 **34 checks against the live 646-row page**, covering the modal, the tooltip's actual
 pixel size, the sort order, the theme redraw, and both scan buttons with `fetch` stubbed
-so no AWS quota is spent proving what the handler sends.
+so no AWS quota is spent proving what the handler sends. Three more harnesses followed:
+`drive_snapshot.py` (9 checks against the static `public/` export via `file://`),
+`edges.py` (9 edge cases — empty states, a *failing* rescan restoring its own button,
+a 390px phone), and `widths.py` (the six-viewport sweep that caught bug 5). All green;
+each of the last two found a bug the happy-path run could not.
 
 **Two testing traps worth remembering.** `dialog.close()` fires its `close` event on a
 *queued task*, so reading the chart back in the same expression sees the pre-close state.
@@ -189,6 +209,18 @@ And `Page.reload` returns *before* navigation starts: polling for "readyState co
 matches the old page and passes instantly, then the reload lands mid-test and silently
 resets state. That one cost an hour chasing a phantom bug in `paintScanScope`, and is why
 the reload helper stamps the page and waits for the stamp to disappear.
+
+## Phase J — licensing and repo metadata ✅
+
+- [x] **MIT `LICENSE`.** The README had claimed MIT with no file behind it; that claim
+      was removed rather than pick a license unasked, and the question sat open until
+      it was answered. Verified in the built wheel: `License-Expression: MIT` and the
+      text lands in `dist-info/licenses/`. GitHub reads `licenseInfo` off the **default
+      branch**, so it stays null until this is pushed.
+- [x] **`pyproject`** — PEP 639 `license` + `license-files`, keywords, five classifiers.
+- [x] **Repo description and 14 topics** set via `gh repo edit`. The description leads
+      with the per-zone spread, since that is the thing nothing else shows.
+- [x] Stale run instruction: 178 → **180** offline tests (184 with the live gates).
 
 ---
 

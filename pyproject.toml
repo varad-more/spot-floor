@@ -3,8 +3,18 @@ name = "spotfloor"
 version = "0.1.0"
 description = "AWS EC2 spot price tracker and cross-region comparator, honest about what it cannot know"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["aws", "ec2", "spot-instances", "spot-price", "cloud-cost", "finops"]
+classifiers = [
+    "Environment :: Web Environment",
+    "Framework :: FastAPI",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: System :: Monitoring",
+]
 authors = [
-    { name = "Varad More", email = "varadmore1@gmail.com" }
+    { name = "Varad More", email = "38086379+varad-more@users.noreply.github.com" }
 ]
 requires-python = ">=3.12"
 dependencies = [

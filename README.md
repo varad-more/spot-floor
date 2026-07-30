@@ -180,7 +180,7 @@ uv run python scripts/serve.py --backfill                # dashboard
 uv run python scripts/scan.py --help                     # one-shot scan
 uv run python scripts/snapshot.py --out site --backfill   # static export
 
-uv run pytest -m "not live"    # 178 tests, no AWS needed
+uv run pytest -m "not live"    # 180 tests, no AWS needed
 uv run pytest                  # + live correctness gates
 ```
 
@@ -222,6 +222,10 @@ why regions are discovered instead of hardcoded, and what was measured to decide
 - No hosted deployment, by choice — publishing would mean putting AWS credentials in
   GitHub. CI runs offline tests only.
 - Alert delivery, auth, per-user rules. The engine exists; the wiring doesn't.
+
+## License
+
+[MIT](LICENSE).
 
 ---
 

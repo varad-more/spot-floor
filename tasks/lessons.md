@@ -52,6 +52,30 @@ building for the real reasons: wall-clock time and per-region rate quota.
 under the corrected reasoning. Don't build against an imaginary cost, and don't refuse
 over one either.
 
+## A layout fix verified at one viewport is verified at one viewport
+
+`97vw` for the modal was checked at 1400px, passed, and shipped. It was wrong: the
+inline chart it has to beat is `100vw - 74px` of *fixed* chrome, so a percentage width
+crosses it at exactly one viewport (1227px) and loses above. The "fix" made the enlarged
+chart 5px narrower at 1400px — the most common desktop size — and the harness only caught
+it on a later unrelated run.
+
+Two follow-ons from the same bug:
+- When a rule is "A must always exceed B", derive it from the units. Mixing `%` against
+  `px` guarantees a crossover; the only question is which side of it you tested on.
+- `dialog` has a **UA stylesheet** `max-width: calc(100% - 6px - 2em)`. It, not your
+  width, is often what binds. Measure the element, don't read your own CSS back.
+
+**Rule:** sweep the dimension. Six viewports in a loop is cheaper than one wrong pixel
+count in a commit message.
+
+## A negative assertion matches your own explanation of it
+
+`assert "97vw" not in body` failed the moment the CSS comment explained why `97vw` was
+wrong. Grep-based tripwires see comments too.
+
+**Rule:** assert the thing that must be present, not the string that must be absent.
+
 ## Two async traps that fake up phantom bugs
 
 - `dialog.close()` fires its `close` event on a **queued task**. Reading state that the

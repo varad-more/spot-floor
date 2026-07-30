@@ -266,10 +266,15 @@
   /* A native <dialog>: Escape, the backdrop, focus containment and the top layer
      are all platform behaviour, and none of it is worth reimplementing. */
   .modal {
-    /* Wider than the page's own 1400px column, or the "enlarged" chart comes out
-       narrower than the one it zoomed -- measured 1043px against 1311px inline. */
-    width: min(1600px, 97vw); max-height: 92vh; overflow: auto;
-    padding: .95rem 1.1rem 1.1rem; color: var(--ink); background: var(--panel);
+    /* "Enlarge" must never produce a NARROWER chart. The inline one is 100vw - 74px
+       (.wrap 40 + .chartcard 34), so everything the modal spends horizontally has to
+       come in under 74px -- including the UA stylesheet's own
+       `dialog { max-width: calc(100% - 6px - 2em) }`, which is what actually binds
+       below the 1600px cap. A percentage width cannot clear that bar: 97vw lost at
+       every viewport above ~1227px, 1400px included. Measured at 1280/1400/1512/1680/
+       1920/2560: never narrower, 1.9x-2.2x the chart area. */
+    width: min(1600px, calc(100vw - 1.5rem)); max-height: 92vh; overflow: auto;
+    padding: .95rem .9rem 1.1rem; color: var(--ink); background: var(--panel);
     border: 1px solid var(--line); border-radius: 10px;
     box-shadow: 0 18px 50px rgb(0 0 0 / .32);
   }
@@ -993,6 +998,13 @@
       // so the control is disabled rather than the colour cycled.
       box.disabled = !on && plotted.length >= MAX_SERIES;
     });
+    // An empty chart has nothing to enlarge, and the modal would cover the very table
+    // its own "click any row below" prompt points at. Every selection change comes
+    // through here, so this is the one place that needs to know.
+    enlarge.disabled = !plotted.length;
+    enlarge.title = plotted.length
+      ? 'Open the chart full size'
+      : 'Plot something first — click a row below';
   }
 
   function togglePlot(key, on) {
@@ -1082,7 +1094,8 @@
   });
   // Enlarges whatever is already plotted -- passing no row keeps the selection, where
   // a sparkline click replaces it with that one series.
-  document.getElementById('enlarge').addEventListener('click', function () {
+  var enlarge = document.getElementById('enlarge');
+  enlarge.addEventListener('click', function () {
     openZoom(null);
   });
   document.getElementById('zoomall').addEventListener('click', function () {

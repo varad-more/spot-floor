@@ -765,6 +765,30 @@ def test_the_chart_can_be_enlarged_without_replacing_the_selection(client) -> No
     assert "openZoom(null)" in body
 
 
+def test_the_modal_width_is_not_a_percentage(client) -> None:
+    """A vw width cannot beat the inline chart's fixed 74px of chrome.
+
+    `97vw` looked like a fix and was one only below a 1227px viewport -- at 1400px the
+    "enlarged" chart came out 5px narrower. Measured across six viewports after the
+    change: never narrower.
+    """
+    body = client.get("/").text
+    assert "width: min(1600px, calc(100vw - 1.5rem))" in body
+
+
+def test_enlarging_an_empty_chart_is_not_offered(client) -> None:
+    """It opened a modal over the table its own empty-state prompt pointed at.
+
+    The guard lives in `syncBoxes`, which every selection change routes through --
+    a per-caller check would have missed 'clear', the filter path, or init.
+    """
+    body = client.get("/").text
+    assert "enlarge.disabled = !plotted.length" in body
+    assert body.index("function syncBoxes") < body.index("enlarge.disabled"), (
+        "the guard moved out of the function every selection change calls"
+    )
+
+
 def test_a_page_load_does_not_fetch_from_providers(seeded) -> None:
     """Rendering reads storage only -- traffic must not drive API quota."""
 

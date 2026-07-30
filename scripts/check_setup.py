@@ -43,8 +43,26 @@ PERMISSIONS = (
     ),
 )
 
+# Not required. Without it the spot table is complete and correct; only the
+# on-demand and savings columns go blank. So this warns rather than failing --
+# telling someone their setup is broken when it works would be its own lie.
+OPTIONAL_PERMISSIONS = (
+    (
+        "pricing:GetProducts",
+        "on-demand list prices, for the savings column",
+        lambda pricing: pricing.get_products(
+            ServiceCode="AmazonEC2",
+            Filters=[
+                {"Type": "TERM_MATCH", "Field": "instanceType", "Value": "m5.large"},
+                {"Type": "TERM_MATCH", "Field": "regionCode", "Value": "us-east-1"},
+            ],
+            MaxResults=1,
+        ),
+    ),
+)
+
 IAM_HINT = """
-    Attach this policy to the IAM user or role you are using. All three actions
+    Attach this policy to the IAM user or role you are using. All four actions
     are read-only and free -- none of them can launch, modify or spend anything.
 
     {
@@ -54,7 +72,8 @@ IAM_HINT = """
         "Action": [
           "ec2:DescribeSpotPriceHistory",
           "ec2:DescribeInstanceTypes",
-          "ec2:DescribeRegions"
+          "ec2:DescribeRegions",
+          "pricing:GetProducts"
         ],
         "Resource": "*"
       }]
@@ -147,6 +166,18 @@ def main() -> int:
         print(IAM_HINT)
         return 1
 
+    # The Price List Query API is a global catalog served from us-east-1, not from
+    # whatever region the session defaults to.
+    pricing = session.client("pricing", region_name="us-east-1")
+    for action, purpose, call in OPTIONAL_PERMISSIONS:
+        try:
+            call(pricing)
+            print(f"{OK} {action:<32} {purpose}")
+        except Exception as exc:
+            print(f"{WARN} {action:<32} {_reason(exc)}")
+            print(f"    Optional. Without it the spot table is unaffected; only the")
+            print(f"    on-demand and savings columns stay blank.")
+
     # --- a real price, end to end -------------------------------------------
     print()
     from spotfloor.providers.aws import AwsProvider, enabled_regions
@@ -165,9 +196,12 @@ def main() -> int:
 
     print(f"{OK} fetched {len(offerings)} live quotes from {len(regions[:2])} regions")
     for offering in sorted(offerings, key=lambda o: o.price_usd_hr)[:4]:
+        # On-demand offerings have no zone -- AWS charges one rate per region -- so
+        # the column shows the region and says which kind of price it is.
+        where = offering.zone or f"{offering.region} (region)"
         print(
-            f"    m5.large  {offering.zone:<18} ${offering.price_usd_hr:.4f}/hr  "
-            f"availability={offering.availability}"
+            f"    m5.large  {where:<20} ${offering.price_usd_hr:.4f}/hr  "
+            f"{offering.price_kind}  availability={offering.availability}"
         )
     for note in provider.notes:
         print(f"{WARN} {note}")

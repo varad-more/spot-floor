@@ -31,6 +31,7 @@ def record(
     vcpus: int | None = 2,
     memory_gib: float | None = 8.0,
     provider: str = "aws",
+    price_kind: PriceKind = PriceKind.SPOT,
     first_seen: datetime | None = None,
     last_seen: datetime | None = None,
 ) -> OfferingRecord:
@@ -41,7 +42,7 @@ def record(
             region=region,
             zone=zone,
             price_usd_hr=price,
-            price_kind=PriceKind.SPOT,
+            price_kind=price_kind,
             availability=availability,
             observed_at=last_seen or NOW,
             gpu_model=gpu_model,
@@ -136,6 +137,92 @@ def test_rows_sort_by_type_then_price_so_regions_compare_adjacently() -> None:
         ("m5.large", "us-east-1"),
         ("m5.large", "eu-west-1"),
     ]
+
+
+# --- on-demand, and the savings it makes measurable --------------------------
+
+
+def on_demand(*, price: float, **kwargs) -> OfferingRecord:
+    """An on-demand record: one rate for the whole region, so no zone."""
+    return record(price=price, zone=None, price_kind=PriceKind.ON_DEMAND, **kwargs)
+
+
+def test_on_demand_is_a_column_on_the_spot_row_not_a_second_row() -> None:
+    """The question is "how much does spot save me", and that needs them adjacent.
+
+    Stored as its own series -- different product, different durability -- but a
+    table twice as tall would answer the question worse, not better.
+    """
+    rows = region_table(
+        [
+            record(price=0.05, zone="us-east-1a"),
+            on_demand(price=0.096),
+        ]
+    )
+
+    assert len(rows) == 1
+    assert rows[0].price_kind is PriceKind.SPOT
+    assert rows[0].on_demand_usd_hr == pytest.approx(0.096)
+
+
+def test_savings_are_measured_against_the_zone_you_would_actually_launch_into() -> None:
+    """Not against a regional average, which is a price nobody can buy."""
+    rows = region_table(
+        [
+            record(price=0.024, zone="us-east-1a"),
+            record(price=0.072, zone="us-east-1d"),
+            on_demand(price=0.096),
+        ]
+    )
+
+    # 0.024 vs 0.096 is 75% off. Against the mean of the two zones it would read
+    # 50%, which is a saving on a price that is not available in any zone.
+    assert rows[0].savings_pct == pytest.approx(75.0)
+
+
+def test_a_missing_on_demand_price_reads_as_unknown_not_as_no_saving() -> None:
+    """0% would assert spot saves you nothing. None says we could not ask.
+
+    This is the IAM path: a policy without pricing:GetProducts, or one of the
+    regions AWS quotes in a currency other than USD.
+    """
+    row = region_table([record(price=0.05)])[0]
+
+    assert row.on_demand_usd_hr is None
+    assert row.savings_pct is None
+
+
+def test_spot_above_the_list_price_is_reported_as_a_negative_saving() -> None:
+    """A real market state during contention. Clamping it at zero would hide it."""
+    rows = region_table([record(price=0.12), on_demand(price=0.096)])
+
+    assert rows[0].savings_pct == pytest.approx(-25.0)
+
+
+def test_an_on_demand_price_with_no_spot_counterpart_still_gets_a_row() -> None:
+    """Folding it into a row that does not exist would drop the only price we have."""
+    rows = region_table([on_demand(price=0.096, region="ap-south-1")])
+
+    assert len(rows) == 1
+    assert rows[0].price_kind is PriceKind.ON_DEMAND
+    assert rows[0].cheapest_usd_hr == pytest.approx(0.096)
+    # No saving to state: it is not cheaper than itself.
+    assert rows[0].savings_pct is None
+
+
+def test_on_demand_does_not_leak_across_regions() -> None:
+    """One rate per region -- but the rates differ, and pairing them wrongly lies."""
+    rows = region_table(
+        [
+            record(price=0.05, region="us-east-1", zone="us-east-1a"),
+            record(price=0.06, region="eu-west-1", zone="eu-west-1a"),
+            on_demand(price=0.096, region="us-east-1"),
+        ]
+    )
+
+    by_region = {r.region: r for r in rows}
+    assert by_region["us-east-1"].on_demand_usd_hr == pytest.approx(0.096)
+    assert by_region["eu-west-1"].on_demand_usd_hr is None
 
 
 # --- the honesty constraints -------------------------------------------------

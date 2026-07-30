@@ -244,6 +244,9 @@
   .colsel { text-align: center; }
   .spread-hi { color: var(--bad-fg); font-weight: 600; }
   .spread-mid { color: var(--warn-fg); }
+  /* Colour is emphasis only here: the number and its sign already say it, and the
+     title attribute names both prices. Nothing in this column is colour-alone. */
+  .saves-hi { color: var(--accent); font-weight: 600; }
   .pill {
     display: inline-block; padding: .1em .45em; border-radius: 999px;
     font-size: .72rem; font-weight: 500; color: var(--unk-fg);
@@ -287,6 +290,36 @@
   .modalacts { display: flex; gap: .4rem; align-items: center; }
   .modalfoot { margin: .7rem 0 0; font-size: .78rem; color: var(--muted); }
 
+  /* --- the primer, and the two narrow modals ------------------------------ */
+  .primer { margin: .5rem 0 .6rem; padding-left: 1.1rem; font-size: .86rem;
+    color: var(--muted); max-width: 68ch; }
+  .primer li { margin-bottom: .18rem; }
+  .primer strong { color: var(--ink); font-weight: 600; }
+
+  /* A picker and a setup prompt are forms, not charts: cap them at reading width
+     rather than inheriting the chart modal's 1600px. */
+  .modal.narrow { width: min(620px, calc(100vw - 1.5rem)); }
+  .modal.narrow p { margin: .5rem 0; font-size: .87rem; }
+  .modal.narrow code { font-size: .82rem; }
+  .modal.narrow pre { margin: .5rem 0; padding: .6rem .7rem; overflow-x: auto;
+    background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
+    font-size: .78rem; }
+  .setupsteps { margin: .4rem 0 .2rem; padding-left: 1.2rem; font-size: .87rem; }
+  .setupsteps li { margin-bottom: .45rem; }
+
+  .pickgrid { display: grid; grid-template-columns: 1fr 1fr; gap: .8rem; }
+  @media (max-width: 620px) { .pickgrid { grid-template-columns: 1fr; } }
+  .pickfoot { display: flex; justify-content: space-between; align-items: center;
+    gap: .8rem; flex-wrap: wrap; margin-top: .9rem; }
+  .estimate { font-size: .83rem; color: var(--muted); }
+  .estimate strong { color: var(--ink); }
+  .estimate.warn { color: #b8730f; }
+  .pickhint { font-size: .78rem; color: var(--muted); margin: .15rem 0 0; }
+  /* The picker's menus sit inside a dialog, which is its own stacking context, so
+     they only have to clear their siblings -- but they must still escape the grid
+     cell's own overflow, hence the higher z-index than the toolbar's. */
+  .modal .ms-menu { z-index: 40; }
+
   footer { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
     font-size: .82rem; color: var(--muted); }
   footer ul { padding-left: 1.1rem; margin: .4rem 0 1rem; }
@@ -307,6 +340,15 @@
         history. Every price names the availability zone it came from — you launch into
         a zone, not into a region.
       </p>
+      <ol class="primer">
+        <li><strong>One row = one instance type in one region</strong>, priced at its
+          cheapest zone. <em>AZ spread</em> is how much that regional number hid.</li>
+        <li><strong>Compare the rows, not the columns.</strong> The same hardware in two
+          regions costs different amounts; that gap is the thing worth acting on.</li>
+        <li><strong>Tick rows to chart them</strong>, <strong>⇄</strong> to plot one type
+          across every region{% if not snapshot %}, <strong>Scan…</strong> to fetch fresh
+          prices for a scope you choose{% endif %}.</li>
+      </ol>
       <p class="claim">
         <span class="pill">availability: unknown</span>
         AWS publishes no availability, so no row here claims any. This compares
@@ -372,7 +414,7 @@
         <label class="check"><input type="checkbox" id="gpuonly"> GPU only</label>
         {% if not snapshot %}
         <button type="button" class="btn primary" id="scan"
-          title="Query AWS now for the rows currently shown">Scan now</button>
+          title="Choose exactly which instance types and regions to fetch">Scan…</button>
         {% endif %}
         <button type="button" class="btn" id="clear">Clear</button>
         <span id="count"></span>
@@ -406,6 +448,10 @@
             class="q" title="Spot price per instance-hour, Linux/UNIX, taken from the cheapest availability zone in this region.">?</span> <span class="arrow">↑</span></span></th>
           <th style="width:168px"><span class="cell">Cheapest zone<span
             class="q" title="The zone the price above came from, and how many zones were observed in this region.">?</span></span></th>
+          <th class="num sortable" data-key="ondemand" style="width:108px"><span class="cell">On-demand<span
+            class="q" title="The published on-demand list price for this instance type in this region, from the AWS Price List API. AWS charges one on-demand rate per region — unlike spot, it does not vary by zone. A dash means it was not observed: either the IAM policy lacks pricing:GetProducts, or AWS quotes this region in a currency other than USD.">?</span> <span class="arrow">↕</span></span></th>
+          <th class="num sortable" data-key="saves" style="width:100px"><span class="cell">Saves<span
+            class="q" title="How much cheaper the cheapest zone is than paying on-demand — measured against the zone you would actually launch into, not a regional average. Negative means spot is currently ABOVE list price, which happens under contention and is a real market state. A dash means no on-demand price was observed; it does not mean spot saves you nothing.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="spread" style="width:104px"><span class="cell">AZ spread<span
             class="q" title="How much dearer the priciest zone in this region is than the cheapest one. A big spread means a regional average would mislead you.">?</span> <span class="arrow">↕</span></span></th>
           <th style="width:158px"><span class="cell">Spec<span
@@ -427,8 +473,13 @@
             data-gpu="{{ 1 if e.row.gpu_count else 0 }}"
             data-price="{{ e.row.cheapest_usd_hr }}"
             data-spread="{{ '%.4f' % e.row.spread_pct }}"
-            data-pergpu="{{ e.row.cheapest_per_gpu_hr if e.row.cheapest_per_gpu_hr is not none else -1 }}"
-            data-moves="{{ e.row.price_changes if e.row.price_changes is not none else -1 }}">
+            {# Blank, not a sentinel number, when a value was not observed. `savings`
+               can legitimately be negative -- spot above list price during contention
+               -- so a negative sentinel would sort real data in with the blanks. #}
+            data-ondemand="{{ e.row.on_demand_usd_hr if e.row.on_demand_usd_hr is not none else '' }}"
+            data-saves="{{ '%.4f' % e.row.savings_pct if e.row.savings_pct is not none else '' }}"
+            data-pergpu="{{ e.row.cheapest_per_gpu_hr if e.row.cheapest_per_gpu_hr is not none else '' }}"
+            data-moves="{{ e.row.price_changes if e.row.price_changes is not none else '' }}">
           <td class="colsel"><input type="checkbox" class="plotbox"
               aria-label="Plot {{ e.row.instance_type }} in {{ e.row.region }}"></td>
           <td class="type">{{ e.row.instance_type }}<span class="rowacts"
@@ -440,6 +491,23 @@
           <td class="num price">${{ '%.4f' % e.row.cheapest_usd_hr }}</td>
           <td class="dim">{{ e.row.cheapest_zone }}
             <span class="dim">({{ e.row.zone_count }}&nbsp;AZ{{ '' if e.row.zone_count == 1 else 's' }})</span>
+          </td>
+          <td class="num">
+            {% if e.row.on_demand_usd_hr is none %}
+              <span class="dim" title="Not observed — either the IAM policy has no pricing:GetProducts, or AWS quotes this region in a currency other than USD. It is not $0.">—</span>
+            {% else %}
+              ${{ '%.4f' % e.row.on_demand_usd_hr }}
+            {% endif %}
+          </td>
+          <td class="num">
+            {% if e.row.savings_pct is none %}
+              <span class="dim" title="No on-demand price observed to compare against. This is not '0% saved'.">—</span>
+            {% elif e.row.savings_pct < 0 %}
+              <span class="spread-hi" title="Spot is currently ABOVE the on-demand list price in this region — a real market state under contention, not a data error.">{{ '%.0f' % e.row.savings_pct }}%</span>
+            {% else %}
+              <span class="{% if e.row.savings_pct >= 70 %}saves-hi{% endif %}"
+                    title="${{ '%.4f' % e.row.cheapest_usd_hr }} in {{ e.row.cheapest_zone }} vs ${{ '%.4f' % e.row.on_demand_usd_hr }} on-demand">{{ '%.0f' % e.row.savings_pct }}%</span>
+            {% endif %}
           </td>
           <td class="num">
             {% if e.row.zone_count < 2 %}
@@ -488,6 +556,76 @@
     <p><strong>No observations yet.</strong></p>
     <p>Run a scan: <code>uv run python scripts/scan.py --backfill</code></p>
   </div></div>
+  {% endif %}
+
+  {% if not snapshot %}
+  <dialog class="modal narrow" id="picker" aria-labelledby="pickertitle">
+    <div class="modalhead">
+      <h2 id="pickertitle">Scan AWS<span class="sub">Pick exactly what to fetch. Nothing
+        else is touched.</span></h2>
+      <button type="button" class="btn iconbtn" id="pickerclose"
+        title="Close" aria-label="Close">✕</button>
+    </div>
+
+    <div class="pickgrid">
+      <div class="ms" id="pick-type">
+        <span class="ms-label">Instance types</span>
+        <div class="ms-box"><input type="text" placeholder="Search all EC2 types…"
+          autocomplete="off" aria-label="Instance types to scan"></div>
+        <div class="ms-menu" hidden></div>
+      </div>
+      <div class="ms" id="pick-region">
+        <span class="ms-label">Regions</span>
+        <div class="ms-box"><input type="text" placeholder="Search your regions…"
+          autocomplete="off" aria-label="Regions to scan"></div>
+        <div class="ms-menu" hidden></div>
+      </div>
+    </div>
+    <p class="pickhint" id="pickhint">Leave a box empty to use every value in it.
+      Types you have never priced are allowed — they will appear in the table once
+      they return a quote.</p>
+
+    <div class="pickfoot">
+      <span class="estimate" id="pickest"></span>
+      <span class="modalacts">
+        <button type="button" class="btn" id="pickvisible"
+          title="Fill both boxes from the filters currently applied to the table">Use current filters</button>
+        <button type="button" class="btn primary" id="pickgo">Scan</button>
+      </span>
+    </div>
+    <p class="modalfoot">Describe calls are free — narrowing saves wall-clock time and
+      per-region rate quota, not money.</p>
+  </dialog>
+  {% endif %}
+
+  {% if needs_credentials %}
+  <dialog class="modal narrow" id="setup" aria-labelledby="setuptitle">
+    <div class="modalhead">
+      <h2 id="setuptitle">No AWS credentials found<span class="sub">The table is empty
+        because nothing can be fetched yet — not because there is nothing to show.</span></h2>
+      <button type="button" class="btn iconbtn" id="setupclose"
+        title="Close" aria-label="Close">✕</button>
+    </div>
+
+    <ol class="setupsteps">
+      <li><strong>Give AWS read-only permissions.</strong> Create an IAM user with the
+        four read-only actions in <code>docs/iam-policy.json</code>. All four are free
+        and none of them can launch, modify or spend anything.</li>
+      <li><strong>Point boto3 at the key</strong> — however you normally would:
+        <pre>aws configure                       # writes ~/.aws/credentials
+aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
+        Run <code>aws configure</code> yourself. <strong>Never paste keys into files in
+        this repository.</strong></li>
+      <li><strong>Check it worked</strong>, then restart this server:
+        <pre>uv run python scripts/check_setup.py</pre>
+        It tests each piece separately — credentials resolve, credentials are valid,
+        each IAM action, a real live price — and names the exact fix for whatever fails.
+        It never prints secret material.</li>
+    </ol>
+
+    <p class="modalfoot">The full walkthrough is in the README, under
+      <strong>Quick start</strong> and <strong>AWS permissions</strong>.</p>
+  </dialog>
   {% endif %}
 
   {% if entries %}
@@ -563,6 +701,37 @@
   paint();
 })();
 </script>
+
+{% if needs_credentials %}
+<script>
+/* The setup prompt. Outside the chart script on purpose: with no credentials there
+   are no rows, so that script does not ship -- and this is precisely the case it
+   would have to run in. An empty table reads as "there is nothing to show" rather
+   than "you have not finished setting this up", and that is the single most common
+   first-run failure with this tool.
+
+   Dismissed state is remembered, because someone reading the page on a machine that
+   will never have credentials should not be re-prompted on every 5-minute refresh. */
+(function () {
+  var dialog = document.getElementById('setup');
+  var KEY = 'sf-setup-dismissed';
+
+  document.getElementById('setupclose').addEventListener('click', function () {
+    dialog.close();
+  });
+  dialog.addEventListener('click', function (event) {
+    if (event.target === dialog) { dialog.close(); }
+  });
+  dialog.addEventListener('close', function () {
+    try { sessionStorage.setItem(KEY, '1'); } catch (e) {}
+  });
+
+  var dismissed = false;
+  try { dismissed = sessionStorage.getItem(KEY) === '1'; } catch (e) {}
+  if (!dismissed) { dialog.showModal(); }
+})();
+</script>
+{% endif %}
 
 {% if entries %}
 <script id="chartdata" type="application/json">{{ chart_data | safe }}</script>
@@ -1126,17 +1295,25 @@
       sortKey = key;
       // First click on a rank-like column shows the extreme you came for: the
       // biggest spread, the most price moves. Price and names still open ascending.
-      sortDir = (numeric && key !== 'price' && key !== 'pergpu') ? -1 : 1;
+      sortDir = (numeric && key !== 'price' && key !== 'pergpu'
+                 && key !== 'ondemand') ? -1 : 1;
     }
     rows.sort(function (a, b) {
       if (!numeric) {
         return a.dataset[key].localeCompare(b.dataset[key]) * sortDir;
       }
       var av = parseFloat(a.dataset[key]), bv = parseFloat(b.dataset[key]);
-      // -1 is the "not applicable" sentinel: no GPU, or no history in the window.
-      // It is not a small number. Sorting it as one puts 500 dashes ahead of every
-      // real value, which is what made "$ per GPU" look broken when clicked.
-      if ((av < 0) !== (bv < 0)) { return av < 0 ? 1 : -1; }
+      // An empty attribute means "not applicable": no GPU, no history in the window,
+      // no on-demand price observed. It is not a small number -- sorting it as one is
+      // what put 500 dashes ahead of every real value in "$ per GPU".
+      //
+      // NaN rather than the -1 this used to use, because "negative" and "missing" are
+      // no longer the same thing: a saving is genuinely negative when spot sits above
+      // the on-demand list price, and that row is real data that must sort with the
+      // other real data.
+      var aNA = isNaN(av), bNA = isNaN(bv);
+      if (aNA !== bNA) { return aNA ? 1 : -1; }
+      if (aNA) { return 0; }
       return (av - bv) * sortDir;
     });
     rows.forEach(function (row) { tbody.appendChild(row); });
@@ -1253,16 +1430,163 @@
   function paintScanScope() {
     if (scanning) { return; }
     var s = visibleScope();
-    scan.disabled = !s.types.length;
-    scan.textContent = s.types.length
-      ? 'Scan ' + s.types.length + '×' + s.regions.length
-      : 'Scan now';
+    // The button opens the picker, so it never goes disabled -- an empty table is
+    // exactly when you most need to ask for something that is not in it. The label
+    // still carries the scope, because "Use current filters" is one click away and
+    // this is what that click would prefill.
+    scan.textContent = 'Scan…';
     scan.title = s.types.length
-      ? 'Query AWS for ' + plural(s.types.length, 'instance type') + ' across '
-        + plural(s.regions.length, 'region') + ' — only the rows shown below'
-      : 'Nothing is shown to scan';
+      ? 'Choose what to fetch. "Use current filters" prefills '
+        + plural(s.types.length, 'instance type') + ' across ' + plural(s.regions.length, 'region')
+      : 'Choose which instance types and regions to fetch from AWS';
   }
   document.addEventListener('sf-filter', paintScanScope);
+
+  // ------------------------------------------------------------- the scan picker
+  // "Scan now" scanned whatever the filters happened to leave visible, which made
+  // the filters do two unrelated jobs and made the one thing you actually want --
+  // "price a type I have never priced" -- impossible: you cannot filter a table
+  // down to a row that is not in it. So the scope is chosen explicitly here, and
+  // the filters are offered as a starting point rather than imposed as one.
+  var picker = document.getElementById('picker');
+  var pickEst = document.getElementById('pickest');
+  var pickHint = document.getElementById('pickhint');
+  var pickTypes = new Set(), pickRegions = new Set();
+
+  // Mutated in place rather than reassigned: the multiselect closes over these
+  // arrays, so replacing them would leave it rendering the old list forever.
+  var typeOptions = [], regionOptions = [];
+  var msPickType = multiselect('pick-type', typeOptions, pickTypes, paintEstimate);
+  var msPickRegion = multiselect('pick-region', regionOptions, pickRegions, paintEstimate);
+
+  var catalogLoaded = false;
+  var BASELINE_HINT = pickHint.textContent;
+
+  function fillOptions(list, values) {
+    list.length = 0;
+    values.forEach(function (v) { list.push(v); });
+  }
+
+  // What the picker can offer before the catalog arrives, and the fallback if it
+  // never does: everything already in the table. Never an empty menu.
+  function optionsFromTable() {
+    var types = {}, regions = {};
+    rows.forEach(function (row) {
+      types[row.dataset.type] = 1;
+      regions[row.dataset.region] = 1;
+    });
+    fillOptions(typeOptions, Object.keys(types).sort());
+    fillOptions(regionOptions, Object.keys(regions).sort());
+  }
+
+  function loadCatalog() {
+    if (catalogLoaded) { return; }
+    catalogLoaded = true;   // one attempt per page; the server memoizes the answer
+    // Said out loud, because the menu is *already usable* while this is in flight --
+    // just short. Without this the picker silently answers "No match" for a type
+    // that is perfectly valid, which is a worse lie than saying nothing.
+    pickHint.textContent = 'Loading the full EC2 instance-type catalog…';
+    picker.dataset.loading = '1';
+    fetch('api/catalog', { method: 'POST' }).then(function (response) {
+      return response.json();
+    }).then(function (body) {
+      if (body.instance_types && body.instance_types.length) {
+        fillOptions(typeOptions, body.instance_types);
+      }
+      if (body.regions && body.regions.length) {
+        fillOptions(regionOptions, body.regions);
+      }
+      pickHint.textContent = body.complete
+        ? 'All ' + body.instance_types.length + ' EC2 instance types across '
+          + plural(body.regions.length, 'enabled region')
+          + '. Leave a box empty to use every value in it.'
+        : (body.note || BASELINE_HINT);
+      delete picker.dataset.loading;
+      msPickType.refresh();
+      msPickRegion.refresh();
+      paintEstimate();
+    }).catch(function (error) {
+      catalogLoaded = false;   // a transport failure is worth retrying on reopen
+      delete picker.dataset.loading;
+      pickHint.textContent = 'The full catalog could not be loaded (' + error.message
+        + '), so this lists only what has already been stored.';
+    });
+  }
+
+  // A scan is one paginated call per region for spot, plus one per instance type
+  // for on-demand list prices, fanned out 8 at a time. Measured live: 1x1 = 2.3s,
+  // 2x2 = 2.6s, 40x17 = 6.7s before on-demand was added. Deliberately coarse -- it
+  // exists to stop "40x17, is that a second or a minute?", not to be a stopwatch.
+  function estimateSeconds(types, regions) {
+    return 1.8 + 0.29 * regions + 0.12 * Math.ceil(types / 8) * 8;
+  }
+
+  function paintEstimate() {
+    var types = pickTypes.size ? pickTypes.size : typeOptions.length;
+    var regions = pickRegions.size ? pickRegions.size : regionOptions.length;
+    if (!types || !regions) {
+      pickEst.textContent = 'Nothing selected yet.';
+      pickEst.classList.remove('warn');
+      return;
+    }
+    var seconds = Math.round(estimateSeconds(types, regions));
+    pickEst.innerHTML = '<strong>' + plural(types, 'type') + ' × '
+      + plural(regions, 'region') + '</strong> — roughly ' + seconds + 's';
+    // Everything unselected means everything, which off a 1,354-type catalog is a
+    // very different click from the one the reader thinks they are making.
+    pickEst.classList.toggle('warn', types * regions > 4000);
+  }
+
+  var pickerOpened = false;
+
+  function openPicker() {
+    if (!typeOptions.length) { optionsFromTable(); }
+    // Prefilled from the table on the first open. "Empty means everything" is the
+    // right rule for the server, and the wrong default for a dialog: off a 1,354-type
+    // catalog it turns an unmodified Scan click into a ~3-minute sweep nobody asked
+    // for. Opening on what you are already looking at is the click you meant; every
+    // chip is removable, so widening stays one keystroke away.
+    if (!pickerOpened) {
+      pickerOpened = true;
+      prefillFromFilters();
+    }
+    msPickType.refresh();
+    msPickRegion.refresh();
+    paintEstimate();
+    picker.showModal();
+    loadCatalog();
+  }
+
+  function prefillFromFilters() {
+    var s = visibleScope();
+    pickTypes.clear(); pickRegions.clear();
+    s.types.forEach(function (t) { pickTypes.add(t); });
+    s.regions.forEach(function (r) { pickRegions.add(r); });
+  }
+
+  scan.addEventListener('click', openPicker);
+  document.getElementById('pickerclose').addEventListener('click', function () {
+    picker.close();
+  });
+  picker.addEventListener('click', function (event) {
+    if (event.target === picker) { picker.close(); }
+  });
+
+  document.getElementById('pickvisible').addEventListener('click', function () {
+    prefillFromFilters();
+    msPickType.refresh();
+    msPickRegion.refresh();
+    paintEstimate();
+  });
+
+  document.getElementById('pickgo').addEventListener('click', function () {
+    // An empty box means "all of them" -- the same convention the server already
+    // uses, where an empty scope falls back to the configured watchlist.
+    var types = pickTypes.size ? Array.from(pickTypes) : typeOptions.slice();
+    var regions = pickRegions.size ? Array.from(pickRegions) : regionOptions.slice();
+    picker.close();
+    runScan(types, regions, scan, 'Scanning…');
+  });
 
   // One request path for both entry points. `btn` is whichever control was pressed;
   // it goes disabled for the round trip so a second click cannot race the first.
@@ -1300,11 +1624,6 @@
       paintScanScope();
     });
   }
-
-  scan.addEventListener('click', function () {
-    var s = visibleScope();
-    runScan(s.types, s.regions, scan, 'Scanning…');
-  });
 
   // Per-row rescan: one type in one region. The cheapest possible question to ask
   // AWS, for when you are watching a single price and don't want to re-sweep 17

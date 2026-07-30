@@ -224,6 +224,97 @@ the reload helper stamps the page and waits for the stamp to disappear.
 
 ---
 
+## Phase K — on-demand prices, a real scan picker, and a setup prompt ✅
+
+Four requests, and one of them contained a false premise worth correcting out loud
+before building: *"scrape that from open source"*. On-demand prices need no scraping.
+The **AWS Price List Query API** is first-party, free, and already reachable with the
+credentials this tool has — demonstrated by measurement, not asserted: one call
+returns **33 USD regions in 0.76s**. Scraping would have been slower, more fragile,
+and a violation of this repo's own "official APIs only" rule.
+
+### On-demand price, and the saving
+
+- [x] **`AwsProvider.on_demand_prices()`.** Omitting the `regionCode` filter is what
+      makes it affordable: one paginated call covers *every* region for one instance
+      type, so a 40-type watchlist is **40 calls, not 680**. Four `TERM_MATCH` filters
+      (Linux / Shared / preInstalledSw NA / capacitystatus Used) pin the SKU to the
+      same product the spot side prices — without all four, one type returns a dozen
+      SKUs and "the on-demand price" becomes whichever sorted first.
+- [x] **Stored as its own `PriceKind.ON_DEMAND` series**, not a column bolted onto the
+      spot row. `series_key` already treats price kind as identity, so folding them
+      together would render one price apparently thrashing by 10x.
+- [x] **Shown as a column, not a second row.** The question is "how much does spot save
+      me", and a table twice as tall answers it worse. An on-demand price with no spot
+      counterpart still gets its own row — dropping it would hide the only price we
+      have.
+- [x] **`savings_pct` is measured against `cheapest_usd_hr`**, the zone you would
+      actually launch into. Against a zone-average it would have read 50% where the
+      truth was 75% — a saving on a price available in no zone.
+- [x] Three things that must stay `None` rather than become numbers: **no
+      `pricing:GetProducts`** (degrades to a note, spot table untouched); **China
+      regions**, which quote CNY and would need an invented exchange rate; and **no
+      on-demand history**, because AWS publishes none and a backfilled list price
+      would be fiction.
+
+### Three bugs this feature exposed, none of them in the feature
+
+1. *The offline suite had started calling AWS.* `provider()` in `test_aws.py` faked
+   the EC2 client but not the new pricing one, so `_default_pricing_factory` built a
+   real boto3 client and 40 tests went to the network. Caught by a wrong assertion,
+   not by a timeout. **Runtime fell 22.3s → 5.2s once faked** — the suite had been
+   quietly non-hermetic. `priced_client` in `test_web.py` had the same hole via
+   `/api/catalog`, where it made the result depend on whether the machine running the
+   tests happened to have AWS configured.
+2. *A failed region would have gained an on-demand row.* `notes` promises "eu-west-1
+   could not be priced, so it is absent from the table", but the Price List API is a
+   global catalog and quotes regions this account cannot call. On-demand is now
+   filtered to the regions that actually answered, so the note stays true.
+3. *On-demand segments would have inflated `price moves`.* The read model groups
+   history by `(type, region)` with no price kind in the key, so an on-demand segment
+   folded in there would be counted as a spot price change that never happened —
+   fabricated data in a column the page explicitly presents as real. History is now
+   read spot-only; `latest` still returns both, because that is the comparison column.
+
+### The sort sentinel had to stop being a negative number
+
+`-1` meant "not applicable" for `$ per GPU` and `Price moves`, and the comparator swept
+negatives to the bottom. That is wrong the moment `Saves` exists: **a saving is
+genuinely negative when spot sits above the on-demand list price**, which is a real
+market state under contention and real data that must sort with the rest of it. The
+sentinel is now a blank attribute (`NaN`); the old guard is asserted *absent* so it
+cannot be reintroduced.
+
+### The scan picker
+
+- [x] **"Scan now" scanned whatever the filters left visible.** That made the filters
+      do two unrelated jobs and made the one thing you actually want — *price a type I
+      have never priced* — impossible to ask for: you cannot filter a table down to a
+      row that is not in it.
+- [x] **`POST /api/catalog`**, memoized on app state. A POST because it asks AWS, and
+      this project's guarantee is that *every GET reads storage only*. Hardcoding a
+      1,354-entry list to keep it a GET would be the same mistake as hardcoding the
+      region list — wrong from the next launch announcement onward.
+- [x] Live estimate before the click, and a **loading state**: the picker is usable
+      while the catalog is in flight, and without saying so it silently answers "No
+      match" for a perfectly valid type. Found by driving it, not by reading it.
+- [x] **Opens prefilled from the filters.** "Empty means everything" is the right rule
+      for the server and the wrong default for a dialog: off a 1,354-type catalog it
+      turns an unmodified Scan click into a ~3-minute sweep nobody asked for.
+
+### Setup prompt, and the primer
+
+- [x] A modal when no provider could be assembled — **two signals, not one**: boto3
+      resolved no key, *or* the provider blew up (a profile that does not exist). Both
+      produce the same empty table and want the same advice; matching only the first
+      left the second staring at nothing.
+- [x] It ships **outside** the chart script, because with no credentials there are no
+      rows and that script does not ship — which is precisely the case it has to run
+      in. Dismissal is remembered, so the 5-minute meta refresh does not re-nag.
+- [x] A three-line primer under the lede: what a row is, what to compare, what to click.
+
+---
+
 ## Review
 
 **Result: 153 offline tests pass; gates 0, 1 and 2 pass against live APIs. Verified

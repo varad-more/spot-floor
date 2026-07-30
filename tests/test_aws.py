@@ -16,6 +16,7 @@ region with no capacity, and this account has 17 opt-in regions that raise
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock
 
@@ -140,10 +141,83 @@ def _boto_error(code: str) -> Exception:
     return error
 
 
+# The on-demand list price per region, as the Price List Query API reports it: no
+# zone dimension, and one rate for the whole region.
+ON_DEMAND_USD_HR = {
+    ("m5.large", "us-east-1"): 0.096,
+    ("m5.large", "eu-west-1"): 0.107,
+    ("p5.48xlarge", "us-east-1"): 98.32,
+    ("g6.12xlarge", "us-east-1"): 4.6014,
+}
+
+
+def _price_list_entry(instance_type: str, region: str, usd: float | None, cny=None) -> str:
+    """One `PriceList` blob, shaped exactly like the real API's JSON string."""
+    per_unit = {}
+    if usd is not None:
+        per_unit["USD"] = f"{usd:.10f}"
+    if cny is not None:
+        per_unit["CNY"] = f"{cny:.10f}"
+    return json.dumps(
+        {
+            "product": {"attributes": {"instanceType": instance_type, "regionCode": region}},
+            "terms": {
+                "OnDemand": {
+                    "SKU.JRTCKXETXF": {
+                        "priceDimensions": {
+                            "SKU.JRTCKXETXF.6YS6EN2CT7": {
+                                "unit": "Hrs",
+                                "pricePerUnit": per_unit,
+                            }
+                        }
+                    }
+                }
+            },
+        }
+    )
+
+
+def fake_pricing_client(*, fail: str | None = None) -> MagicMock:
+    """A Price List Query client that answers with every region in one page.
+
+    Mirrors the real shape that makes this affordable: the request carries no
+    ``regionCode`` filter, so one call covers all regions for one instance type.
+    """
+    client = MagicMock(name="pricing")
+
+    def paginate(*, ServiceCode: str, Filters: list[dict]) -> list[dict]:
+        if fail:
+            raise _boto_error(fail)
+        wanted = next(f["Value"] for f in Filters if f["Field"] == "instanceType")
+        entries = [
+            _price_list_entry(t, r, usd)
+            for (t, r), usd in ON_DEMAND_USD_HR.items()
+            if t == wanted
+        ]
+        # A China region on every request, quoted in CNY. It must be dropped, not
+        # converted -- we did not observe an exchange rate.
+        entries.append(_price_list_entry(wanted, "cn-north-1", None, cny=0.7))
+        return [{"PriceList": entries}]
+
+    paginator = MagicMock()
+    paginator.paginate.side_effect = paginate
+    client.get_paginator.return_value = paginator
+    return client
+
+
 def provider(
-    *, regions=("us-east-1", "eu-west-1"), failing: set[str] | None = None, **kwargs
+    *,
+    regions=("us-east-1", "eu-west-1"),
+    failing: set[str] | None = None,
+    pricing_fails: str | None = None,
+    **kwargs,
 ) -> AwsProvider:
-    """An AwsProvider over fake clients, with the clients exposed for assertions."""
+    """An AwsProvider over fake clients, with the clients exposed for assertions.
+
+    The pricing client is faked here rather than left to the default factory on
+    purpose: without it every one of these tests would build a real boto3 client and
+    the offline suite would quietly start calling AWS.
+    """
     failing = failing or set()
     clients: dict[str, MagicMock] = {}
 
@@ -154,6 +228,9 @@ def provider(
             )
         return clients[region]
 
+    pricing = fake_pricing_client(fail=pricing_fails)
+    kwargs.setdefault("pricing_factory", lambda: pricing)
+
     p = AwsProvider(
         regions=regions,
         instance_types=WATCHLIST,
@@ -162,6 +239,7 @@ def provider(
         **kwargs,
     )
     p._test_clients = clients  # type: ignore[attr-defined]
+    p._test_pricing = pricing  # type: ignore[attr-defined]
     return p
 
 
@@ -205,14 +283,24 @@ def test_user_creds_may_use_placement_scores() -> None:
         regions=("us-east-1",),
         instance_types=WATCHLIST,
         client_factory=factory,
+        pricing_factory=fake_pricing_client,
         creds_owner=CredsOwner.USER,
     )
     offerings = p.fetch()
 
     clients["us-east-1"].get_spot_placement_scores.assert_called()
-    assert offerings
-    assert all(o.availability is Availability.UNAVAILABLE for o in offerings)
-    assert all(o.availability_score == 0.1 for o in offerings)
+    spot = [o for o in offerings if o.price_kind is PriceKind.SPOT]
+    assert spot
+    assert all(o.availability is Availability.UNAVAILABLE for o in spot)
+    assert all(o.availability_score == 0.1 for o in spot)
+
+    # Spot Placement Score describes the *spot* capacity pool. On-demand is a
+    # different pool, so the score says nothing about it and must not be attached --
+    # even with the user's own credentials, where the score is otherwise legitimate.
+    on_demand = [o for o in offerings if o.price_kind is PriceKind.ON_DEMAND]
+    assert on_demand
+    assert all(o.availability is Availability.UNKNOWN for o in on_demand)
+    assert all(o.availability_score is None for o in on_demand)
 
 
 def test_placement_scores_are_fetched_once_per_instance_type() -> None:
@@ -241,6 +329,7 @@ def test_placement_scores_are_fetched_once_per_instance_type() -> None:
         regions=("us-east-1",),
         instance_types=WATCHLIST,
         client_factory=factory,
+        pricing_factory=fake_pricing_client,
         creds_owner=CredsOwner.USER,
     )
     segments = p.history_segments(days=1)
@@ -262,7 +351,10 @@ def test_a_failed_region_is_reported_not_silently_dropped() -> None:
     p = provider(failing={"eu-west-1"})
     offerings = p.fetch()
 
-    # The healthy region still returns data...
+    # The healthy region still returns data -- and the failed one contributes
+    # nothing at all, not even the on-demand list price the global Price List API
+    # would happily quote for it. The note below promises it is absent; an
+    # on-demand-only row would make that promise false.
     assert {o.region for o in offerings} == {"us-east-1"}
     # ...and the broken one is named, with its reason, for the page to render.
     assert len(p.notes) == 1
@@ -331,7 +423,11 @@ def test_only_the_most_recent_quote_per_zone_survives() -> None:
     """describe_spot_price_history is a stream; the naive read is stale."""
     offerings = [o for o in provider(regions=("us-east-1",)).fetch()]
 
-    by_zone = {o.zone: o for o in offerings if o.instance_type == "m5.large"}
+    by_zone = {
+        o.zone: o
+        for o in offerings
+        if o.instance_type == "m5.large" and o.price_kind is PriceKind.SPOT
+    }
     assert set(by_zone) == {"us-east-1a", "us-east-1d"}
     assert by_zone["us-east-1a"].price_usd_hr == pytest.approx(0.0510), "stale quote"
 
@@ -383,6 +479,85 @@ def test_unknown_instance_types_are_dropped_not_guessed() -> None:
     p = provider()
     p._catalog = {}  # simulate every instance type missing from the catalog
     assert p.fetch() == []
+
+
+# --- on-demand list prices ---------------------------------------------------
+
+
+def test_on_demand_offerings_carry_no_zone() -> None:
+    """AWS charges one on-demand rate per region. A zone here would be invented.
+
+    The per-AZ spread is the whole justification for this tool's roll-up, and it
+    does not exist for this product -- so the field stays None rather than being
+    filled with an arbitrary zone or with the region's name.
+    """
+    offerings = provider(regions=("us-east-1",)).fetch()
+    on_demand = [o for o in offerings if o.price_kind is PriceKind.ON_DEMAND]
+
+    assert on_demand
+    assert all(o.zone is None for o in on_demand)
+    assert {o.region for o in on_demand} == {"us-east-1"}
+
+    m5 = next(o for o in on_demand if o.instance_type == "m5.large")
+    assert m5.price_usd_hr == pytest.approx(0.096)
+
+
+def test_a_region_quoted_in_another_currency_is_dropped_not_converted() -> None:
+    """cn-north-1 bills in CNY. Turning that into USD invents an exchange rate.
+
+    Same rule as an unobserved bucket staying None: absence is not a value, and a
+    number we did not observe must not be manufactured to fill a column.
+    """
+    p = provider(regions=("us-east-1", "cn-north-1"))
+    prices = p.on_demand_prices()
+
+    assert ("m5.large", "us-east-1") in prices
+    assert not any(region == "cn-north-1" for _type, region in prices)
+
+
+def test_on_demand_costs_one_call_per_type_not_one_per_type_and_region() -> None:
+    """Omitting the regionCode filter is what makes this affordable.
+
+    One paginated call returns every region for an instance type, so a 40-type
+    watchlist across 17 regions is 40 calls, not 680.
+    """
+    p = provider(regions=("us-east-1", "eu-west-1"))
+    p.fetch()
+
+    calls = p._test_pricing.get_paginator.return_value.paginate.call_args_list  # type: ignore[attr-defined]
+    assert len(calls) == len(WATCHLIST)
+    for call in calls:
+        fields = {f["Field"] for f in call.kwargs["Filters"]}
+        assert "regionCode" not in fields, "a per-region filter multiplies the call count"
+
+
+def test_on_demand_prices_are_fetched_once_not_per_poll() -> None:
+    """List prices move a few times a year; the poller ticks every five minutes."""
+    p = provider(regions=("us-east-1",))
+    p.fetch()
+    p.fetch()
+
+    calls = p._test_pricing.get_paginator.return_value.paginate.call_args_list  # type: ignore[attr-defined]
+    assert len(calls) == len(WATCHLIST)
+
+
+def test_losing_on_demand_prices_does_not_take_the_spot_table_down() -> None:
+    """The IAM path: a policy with the three EC2 actions but no pricing:GetProducts.
+
+    The savings column going blank is a degradation. An empty page is an outage,
+    and one must not become the other.
+    """
+    p = provider(regions=("us-east-1",), pricing_fails="AccessDeniedException")
+    offerings = p.fetch()
+
+    spot = [o for o in offerings if o.price_kind is PriceKind.SPOT]
+    assert spot, "a pricing failure emptied the spot table"
+    assert not [o for o in offerings if o.price_kind is PriceKind.ON_DEMAND]
+
+    # Blank must say why it is blank, or it reads as "spot saves you nothing".
+    note = next(n for n in p.notes if "on-demand" in n.lower())
+    assert "AccessDeniedException" in note
+    assert "pricing:GetProducts" in note
 
 
 # --- history_segments: the backfill path -------------------------------------
@@ -467,6 +642,19 @@ def test_equal_consecutive_prices_are_coalesced_into_one_segment() -> None:
     assert segments[0].first_seen == NOW - timedelta(hours=3)
 
 
+def test_backfilled_history_is_spot_only() -> None:
+    """AWS publishes no on-demand price history, so there is none to backfill.
+
+    It also protects the volatility column: the read model groups history by
+    (type, region), so an on-demand segment folded in here would be counted as a
+    spot price change that never happened.
+    """
+    segments = provider(regions=("us-east-1",)).history_segments(days=1)
+
+    assert segments
+    assert all(s.offering.price_kind is PriceKind.SPOT for s in segments)
+
+
 # --- region discovery --------------------------------------------------------
 
 
@@ -489,14 +677,31 @@ def test_gate_1_live_aws_is_unknown_without_user_creds() -> None:
         creds_owner=CredsOwner.APP,
     ).fetch()
 
-    assert offerings, "AWS returned no spot quotes"
+    assert offerings, "AWS returned no quotes"
     for o in offerings:
+        # The honesty gate, live: neither price kind gets a fabricated availability.
         assert o.availability is Availability.UNKNOWN
         assert o.availability_score is None
-        assert o.price_kind is PriceKind.SPOT
         assert o.region == "us-east-1"
+        assert 0 < o.price_usd_hr < 200
+
+    spot = [o for o in offerings if o.price_kind is PriceKind.SPOT]
+    on_demand = [o for o in offerings if o.price_kind is PriceKind.ON_DEMAND]
+
+    assert spot, "AWS returned no spot quotes"
+    for o in spot:
         assert o.zone and o.zone.startswith("us-east-1")
-        assert 0 < o.price_usd_hr < 100
+
+    # Validates the on-demand normalization against live values rather than against a
+    # fixture we wrote ourselves -- which is the whole point of the live gates.
+    assert on_demand, "the Price List API returned no on-demand rates"
+    for o in on_demand:
+        # No zone dimension exists for this product. A fixture can be made to agree
+        # with a wrong belief about that; AWS cannot.
+        assert o.zone is None, "an on-demand offering invented a zone"
+
+    # One rate per (type, region), not one per zone.
+    assert len({o.instance_type for o in on_demand}) == len(on_demand)
 
 
 @pytest.mark.live

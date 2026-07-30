@@ -28,18 +28,25 @@ deliberate — the sample exists to show you the interface, not to be a data sou
 | | |
 |---|---|
 | **One row per (instance type, region)** | with the cheapest zone named, because you launch into a zone |
+| **On-demand price, and what spot saves** | measured against the zone you'd actually launch into, not a regional average |
 | **AZ spread** | how much price variation the regional number hid |
 | **7-day price chart** | multi-series — plot one instance across every region and compare |
 | **Price moves** | how often the price changed, a contention hint |
 | **Any instance family** | GPU, compute, memory, burstable, storage — not just GPUs |
 | **Availability** | always `unknown`, and [here's why](#the-one-thing-it-cannot-tell-you) |
 
+Measured live: `p4d.24xlarge` in `us-east-1` at **$7.94/hr spot against $21.96
+on-demand — 64% off**. A negative saving is possible and is shown as one: spot above
+list price is a real market state under contention, not a data error.
+
 Multi-select filters with autocomplete, sortable and resizable columns, a light/dark
 toggle, and any sparkline (or **⤢ Enlarge**) opens the chart full size.
 
-The scan button says what it will scan before you click it — **Scan 40×17** means 40
-instance types across 17 regions, recomputed from whatever the filters leave visible.
-Each row also carries a **⟳** to refetch just that one type in that one region.
+**Scan…** opens a picker: choose any of EC2's ~1,354 instance types and any of your
+enabled regions, see the scope and a rough duration before you commit, and fetch types
+that have never been in the table. It opens prefilled with whatever the filters
+currently show. Each row also carries a **⟳** to refetch just that one type in that one
+region.
 
 ---
 
@@ -66,7 +73,7 @@ immediately. Without it, charts fill in one poll at a time.
 
 ### AWS permissions
 
-Create an IAM user with exactly these three read-only actions
+Create an IAM user with exactly these four read-only actions
 ([`docs/iam-policy.json`](docs/iam-policy.json)):
 
 ```json
@@ -77,16 +84,21 @@ Create an IAM user with exactly these three read-only actions
     "Action": [
       "ec2:DescribeSpotPriceHistory",
       "ec2:DescribeInstanceTypes",
-      "ec2:DescribeRegions"
+      "ec2:DescribeRegions",
+      "pricing:GetProducts"
     ],
     "Resource": "*"
   }]
 }
 ```
 
-All three are **free** — AWS does not bill for EC2 describe calls, and none of them
-can launch or modify anything. Don't reuse an admin key; a dedicated user with only
-these three can do nothing else if it leaks.
+All four are **free** — AWS bills for neither EC2 describe calls nor the Price List
+Query API, and none of them can launch or modify anything. Don't reuse an admin key; a
+dedicated user with only these four can do nothing else if it leaks.
+
+`pricing:GetProducts` is the only optional one. Without it everything still works and
+the on-demand and savings columns say so, rather than reading as "spot saves you
+nothing".
 
 Then point boto3 at your credentials however you normally would:
 
@@ -107,9 +119,10 @@ fails. It never prints secret material.
 
 The server polls every 5 minutes on its own. To scan on demand:
 
-**From the page** — the scan button is labelled with its own scope (**Scan 3×2** = 3
-types across 2 regions), so narrow the filters until it says what you want. For a single
-price, click **⟳** on that row: one type, one region, ~2s.
+**From the page** — **Scan…** opens a picker. Pick instance types and regions
+independently of the filters (so you can price something that isn't in the table yet),
+watch the estimate update — *"3 types × 2 regions — roughly 3s"* — then scan. For a
+single price, click **⟳** on that row: one type, one region, ~2s.
 
 **From the terminal:**
 
@@ -180,7 +193,7 @@ uv run python scripts/serve.py --backfill                # dashboard
 uv run python scripts/scan.py --help                     # one-shot scan
 uv run python scripts/snapshot.py --out site --backfill   # static export
 
-uv run pytest -m "not live"    # 180 tests, no AWS needed
+uv run pytest -m "not live"    # 202 tests, no AWS needed
 uv run pytest                  # + live correctness gates
 ```
 
@@ -218,7 +231,12 @@ why regions are discovered instead of hardcoded, and what was measured to decide
 
 ## Not built
 
-- On-demand prices (different API). Spot `Linux/UNIX` only.
+- Spot `Linux/UNIX` only. On-demand is priced for the matching SKU (shared tenancy,
+  no bundled software); Windows, SUSE and dedicated tenancy are not.
+- **On-demand price history.** AWS publishes none, so that series only accumulates
+  forward from your first poll — a backfilled on-demand chart would be invented.
+- **Regions AWS quotes in a currency other than USD** (the China regions) get no
+  on-demand price. Converting would mean inventing an exchange rate.
 - No hosted deployment, by choice — publishing would mean putting AWS credentials in
   GitHub. CI runs offline tests only.
 - Alert delivery, auth, per-user rules. The engine exists; the wiring doesn't.

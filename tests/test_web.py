@@ -22,7 +22,7 @@ from fastapi.testclient import TestClient
 
 from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import WebConfig, create_app
+from spotfloor.web.app import NO_CREDENTIALS_NOTE, WebConfig, create_app
 
 
 def offering(
@@ -92,8 +92,52 @@ def seeded(store):
 
 
 @pytest.fixture
+def priced(seeded):
+    """The seeded store, plus the on-demand list price for one of its two regions.
+
+    Only one region on purpose: the other is what proves a missing on-demand price
+    renders as "not observed" rather than as a zero or as "saves nothing".
+    """
+    seeded.write(
+        [
+            # No zone -- AWS charges one on-demand rate for the whole region.
+            offering(region="us-east-1", zone=None, price=0.096, kind=PriceKind.ON_DEMAND),
+            offering(
+                instance_type="p5.48xlarge",
+                region="us-east-1",
+                zone=None,
+                price=98.32,
+                kind=PriceKind.ON_DEMAND,
+                gpu_count=8,
+                gpu_model="H100_SXM_80GB",
+                vcpus=192,
+                memory_gib=2048.0,
+            ),
+        ],
+        now=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    return seeded
+
+
+@pytest.fixture
 def client(seeded):
     app = create_app(store=seeded, config=WebConfig(history_days=7), poll=False)
+    with TestClient(app) as c:
+        yield c
+
+
+@pytest.fixture
+def priced_client(priced):
+    app = create_app(
+        store=priced,
+        config=WebConfig(history_days=7),
+        poll=False,
+        # Explicit, not incidental: `/api/catalog` builds providers, and the default
+        # factory reaches for real boto3 credentials. Leaving it unset makes the
+        # offline suite pass or fail depending on whether the machine running it
+        # happens to have AWS configured.
+        provider_factory=lambda config: ([], ["AWS is not configured in this test."]),
+    )
     with TestClient(app) as c:
         yield c
 
@@ -356,14 +400,158 @@ def test_the_whole_header_cell_sorts_but_the_resize_grip_does_not(client) -> Non
 def test_not_applicable_never_sorts_as_a_small_number(client) -> None:
     """A source-level tripwire for a bug that shipped once.
 
-    `$ per GPU` and `Price moves` use -1 for "not applicable" (no GPU, no history).
-    Sorting that as a number puts every dash ahead of every real value, so the
-    comparator has to special-case it in both directions. The behaviour itself is
-    exercised by driving the extracted comparator; this only fails if the guard is
-    deleted.
+    `$ per GPU`, `Price moves`, `On-demand` and `Saves` all have a "not applicable"
+    state -- no GPU, no history, no on-demand price observed. Sorting that as a
+    number puts every dash ahead of every real value, which is what made `$ per GPU`
+    look broken when clicked.
+
+    The sentinel is a *blank* attribute (NaN), not -1. It had to stop being a
+    negative number when `Saves` arrived: a saving is genuinely negative when spot
+    sits above the on-demand list price, and that row is real data that must sort
+    with the rest of it rather than being swept in with the blanks.
     """
     body = client.get("/").text
-    assert "(av < 0) !== (bv < 0)" in body, "the sentinel guard is gone from the sort"
+    assert "var aNA = isNaN(av), bNA = isNaN(bv);" in body, "the sentinel guard is gone"
+    assert "if (aNA !== bNA) { return aNA ? 1 : -1; }" in body, "blanks no longer sort last"
+    # A negative sentinel would silently re-break `Saves`. Nothing may reintroduce it.
+    assert "(av < 0) !== (bv < 0)" not in body
+
+
+# --- on-demand, and the saving it makes visible ------------------------------
+
+
+def test_the_page_shows_the_on_demand_price_and_what_spot_saves(priced_client) -> None:
+    """The comparison a spot table exists to support, made explicit.
+
+    A spot price on its own is a number without a scale: $0.051/hr is only
+    meaningful next to the $0.096 you would otherwise pay.
+    """
+    body = priced_client.get("/").text
+    assert ">On-demand<" in body
+    assert ">Saves<" in body
+    assert "$0.0960" in body
+    # 0.051 in the cheapest zone against 0.096 on-demand is 47% off.
+    assert "47%" in body
+
+
+def test_on_demand_is_one_row_per_region_not_a_second_row(priced_client) -> None:
+    """Stored as its own series; shown as a column. The table must not double."""
+    rows = priced_client.get("/api/market").json()["rows"]
+
+    assert [r["price_kind"] for r in rows] == ["spot"] * len(rows)
+    east = next(r for r in rows if r["instance_type"] == "m5.large" and r["region"] == "us-east-1")
+    assert east["on_demand_usd_hr"] == pytest.approx(0.096)
+    assert east["savings_pct"] == pytest.approx(46.88, abs=0.01)
+
+
+def test_a_missing_on_demand_price_says_so_instead_of_reading_as_zero(priced_client) -> None:
+    """us-west-2 was never priced on-demand. The cell must not imply 0% saved.
+
+    Same failure mode as a blank availability cell: the default rendering of "we do
+    not know" is a value, and the value it looks like is the wrong claim.
+    """
+    rows = priced_client.get("/api/market").json()["rows"]
+    west = next(r for r in rows if r["region"] == "us-west-2")
+
+    assert west["on_demand_usd_hr"] is None
+    assert west["savings_pct"] is None
+
+    body = priced_client.get("/").text
+    assert "It is not $0." in body
+    assert "This is not '0% saved'." in body
+
+
+def test_on_demand_history_never_inflates_the_price_moves_column(priced_client) -> None:
+    """The read model groups history by (type, region), with no price kind in the key.
+
+    So an on-demand segment folded into that grouping would be counted as a spot
+    price change that never happened -- a fabricated fact in a column the page
+    explicitly presents as "real changes AWS published".
+    """
+    rows = priced_client.get("/api/market").json()["rows"]
+    east = next(r for r in rows if r["instance_type"] == "m5.large" and r["region"] == "us-east-1")
+
+    # Two zones, one segment each, one poll: no price has changed yet.
+    assert east["price_changes"] == 1
+
+
+# --- the scan picker ---------------------------------------------------------
+
+
+def test_the_scan_button_opens_a_picker_rather_than_scanning_the_filters(client) -> None:
+    """You cannot filter a table down to a row that is not in it.
+
+    "Scan now" scanned whatever the filters left visible, which made the filters do
+    two unrelated jobs and made the one thing you actually want -- price a type you
+    have never priced -- impossible to ask for.
+    """
+    body = client.get("/").text
+    assert 'id="picker"' in body
+    assert 'id="pick-type"' in body and 'id="pick-region"' in body
+    # The filters are offered as a starting point, not imposed as the scope.
+    assert 'id="pickvisible"' in body
+    assert "Use current filters" in body
+
+
+def test_the_picker_states_the_cost_of_the_scan_before_it_runs(client) -> None:
+    """"40x17" is only useful if you know whether that is a second or a minute."""
+    body = client.get("/").text
+    assert "function estimateSeconds" in body
+    assert "function paintEstimate" in body
+    assert 'id="pickest"' in body
+
+
+def test_the_catalog_offers_types_that_have_never_been_priced(priced_client) -> None:
+    """The whole point of the picker: reach a type that is not in the table yet.
+
+    With no AWS provider configured it degrades to what the store and the watchlist
+    already know -- a shorter list, never an empty menu, and it says which it is.
+    """
+    body = priced_client.post("/api/catalog").json()
+
+    assert "m5.large" in body["instance_types"]
+    # The configured watchlist, not merely what has been observed.
+    assert set(body["watchlist"]) <= set(body["instance_types"])
+    assert body["complete"] is False
+    assert body["note"], "a partial list must say why it is partial"
+
+
+def test_the_catalog_is_a_post_because_it_asks_aws(client) -> None:
+    """Every GET reads storage only. That guarantee is what keeps API quota tied to
+    the poll schedule rather than to page traffic, so the one route that has to ask
+    AWS which instance types exist cannot be a GET."""
+    assert client.get("/api/catalog").status_code == 405
+
+
+# --- the missing-credentials prompt ------------------------------------------
+
+
+def test_missing_credentials_prompt_the_reader_instead_of_showing_an_empty_table(
+    store,
+) -> None:
+    """An empty table reads as "there is nothing to show", not "you are not set up".
+
+    This is the most common first-run failure with this tool, and the page it
+    produces is indistinguishable from a working page with no capacity.
+    """
+    app = create_app(store=store, poll=False, notes=[NO_CREDENTIALS_NOTE])
+    with TestClient(app) as c:
+        body = c.get("/").text
+
+    assert 'id="setup"' in body
+    assert "dialog.showModal()" in body
+    # It points at the real setup path rather than restating the error.
+    assert "docs/iam-policy.json" in body
+    assert "aws configure" in body
+    assert "scripts/check_setup.py" in body
+    # And it repeats the one rule that matters most.
+    assert "Never paste keys into files in" in body
+
+
+def test_a_configured_page_does_not_nag_about_credentials(client) -> None:
+    """The inverse, so the prompt cannot start firing on a working setup."""
+    body = client.get("/").text
+    assert 'id="setup"' not in body
 
 
 def test_filtering_to_nothing_explains_itself(client) -> None:
@@ -710,16 +898,17 @@ def test_a_snapshot_has_no_refresh_route_and_no_button(snapshot_client) -> None:
     genuinely does not exist -- which is the honest status for it.
     """
     assert snapshot_client.post("/api/refresh", json={}).status_code == 404
+    assert snapshot_client.post("/api/catalog", json={}).status_code == 404
     body = snapshot_client.get("/").text
     assert 'id="scan"' not in body
-    assert "Scan now" not in body
+    assert 'id="picker"' not in body
 
 
 def test_the_live_page_does_offer_a_scan_button(client) -> None:
     """The inverse, so the two modes cannot quietly converge."""
     body = client.get("/").text
     assert 'id="scan"' in body
-    assert "Scan now" in body
+    assert 'id="picker"' in body
 
 
 def test_every_row_can_be_rescanned_on_its_own(client) -> None:

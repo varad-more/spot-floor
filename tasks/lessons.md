@@ -76,6 +76,44 @@ wrong. Grep-based tripwires see comments too.
 
 **Rule:** assert the thing that must be present, not the string that must be absent.
 
+## A sentinel is a claim about the value space, and value spaces grow
+
+`-1` meant "not applicable" for `$ per GPU` and `Price moves`, and the sort comparator
+swept negatives to the bottom. Correct — until `Saves` arrived, where a negative is
+*real data*: spot above the on-demand list price is a market state, not a missing
+value. The sentinel silently reclassified every contended row as "no data".
+
+**Rule:** pick a sentinel outside the value space, not at the edge of it. `NaN` from a
+blank attribute cannot collide with a number; `-1` can, as soon as one column admits
+negatives. And when you replace a guard, assert the old one is **absent** — otherwise
+nothing stops it coming back.
+
+## A new dependency in a fake is a hole in the test suite's hermeticity
+
+Adding a pricing client to `AwsProvider` made 40 tests build a *real* boto3 client,
+because the test helper faked `client_factory` and nothing else. The suite still
+passed most assertions — it was calling AWS and getting right answers. The tell was
+runtime: **22.3s → 5.2s** once the fake was supplied. A second instance of the same
+hole (`/api/catalog` in the web tests) made a result depend on whether the machine
+running the tests happened to have credentials.
+
+**Rule:** when a class gains a new outbound dependency, the test helper that
+constructs it must gain a matching fake in the same commit. Watch suite *runtime* as
+a hermeticity signal — offline tests that got slower are usually offline tests that
+stopped being offline.
+
+## Ask what a new field breaks in the aggregates that already exist
+
+On-demand prices were a clean addition to the model and quietly wrong twice
+downstream: history is grouped by `(type, region)` with no price kind, so on-demand
+segments would have been counted as spot price *changes*; and `notes` already promised
+a failed region was "absent from the table", which an on-demand-only row would have
+falsified. Neither is visible in the diff that adds the field.
+
+**Rule:** after adding a variant to a type, grep every place the old type is grouped,
+counted, or filtered. The bug is never in the new code — it is in the aggregate that
+was correct until the value space widened.
+
 ## Two async traps that fake up phantom bugs
 
 - `dialog.close()` fires its `close` event on a **queued task**. Reading state that the

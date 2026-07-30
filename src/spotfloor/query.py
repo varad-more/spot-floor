@@ -80,9 +80,33 @@ class RegionRow:
     price_changes: int | None = None
     coefficient_of_variation: float | None = None
 
+    # The region's on-demand list price, when one was observed. None means "not
+    # observed" -- an IAM policy without pricing:GetProducts, or a region AWS
+    # quotes in a currency other than USD. It never means "on-demand is free".
+    on_demand_usd_hr: float | None = None
+
     @property
     def zone_count(self) -> int:
         return len(self.zones)
+
+    @property
+    def savings_pct(self) -> float | None:
+        """How much cheaper the cheapest zone is than paying on-demand.
+
+        ``None`` rather than 0 when there is no on-demand price to compare against,
+        because "we could not ask" and "spot saves you nothing" are different claims
+        and a 0 in this column would assert the second one.
+
+        Computed against ``cheapest_usd_hr``, so it is the saving on the zone the row
+        actually tells you to launch into -- not against a regional average nobody
+        can buy. Spot above list price is a real market state, so the figure is
+        allowed to go negative rather than being clamped at zero.
+        """
+        if self.on_demand_usd_hr is None or self.on_demand_usd_hr <= 0:
+            return None
+        if self.price_kind is PriceKind.ON_DEMAND:
+            return None
+        return (1 - self.cheapest_usd_hr / self.on_demand_usd_hr) * 100
 
     @property
     def spread_pct(self) -> float:
@@ -128,6 +152,13 @@ def region_table(
     ``history`` is keyed by ``(instance_type, region)`` and drives the volatility
     columns. Omit it and those stay ``None``, which the UI must render as "not
     computed" rather than as zero changes.
+
+    **On-demand is a column here, not a row.** It is stored as its own series --
+    different product, different durability, its own history -- but the question a
+    reader has is "how much does spot save me", and that is answered by putting the
+    two prices side by side rather than by doubling the table's height. An
+    on-demand price with no spot counterpart still gets its own row, because
+    dropping it would hide the only price observed for that pair.
     """
     groups: dict[tuple[str, str, PriceKind], list[OfferingRecord]] = {}
     for record in records:
@@ -135,11 +166,35 @@ def region_table(
         key = (offering.instance_type, offering.region, offering.price_kind)
         groups.setdefault(key, []).append(record)
 
+    # AWS charges one on-demand rate per region, so there is nothing to roll up --
+    # but `min` keeps this total in the face of a duplicate rather than picking
+    # arbitrarily.
+    on_demand = {
+        (instance_type, region): min(r.offering.price_usd_hr for r in members)
+        for (instance_type, region, kind), members in groups.items()
+        if kind is PriceKind.ON_DEMAND
+    }
+
     rows = [
-        _region_row(key, members, history=history) for key, members in groups.items()
+        _region_row(
+            key, members, history=history, on_demand_usd_hr=on_demand.get(key[:2])
+        )
+        for key, members in groups.items()
+        if key[2] is not PriceKind.ON_DEMAND or _only_kind_for_pair(key, groups)
     ]
     rows.sort(key=lambda r: (r.instance_type, r.cheapest_usd_hr))
     return rows
+
+
+def _only_kind_for_pair(
+    key: tuple[str, str, PriceKind],
+    groups: Mapping[tuple[str, str, PriceKind], Sequence[OfferingRecord]],
+) -> bool:
+    """True when no other price kind was observed for this (instance_type, region)."""
+    instance_type, region, kind = key
+    return not any(
+        (instance_type, region, other) in groups for other in PriceKind if other is not kind
+    )
 
 
 def _region_row(
@@ -147,6 +202,7 @@ def _region_row(
     members: list[OfferingRecord],
     *,
     history: Mapping[tuple[str, str], Sequence[OfferingRecord]] | None,
+    on_demand_usd_hr: float | None = None,
 ) -> RegionRow:
     instance_type, region, price_kind = key
 
@@ -203,6 +259,7 @@ def _region_row(
         gpu_count=spec.gpu_count,
         price_changes=changes,
         coefficient_of_variation=cov,
+        on_demand_usd_hr=on_demand_usd_hr,
     )
 
 

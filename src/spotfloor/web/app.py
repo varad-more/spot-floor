@@ -44,6 +44,7 @@ from fastapi.templating import Jinja2Templates
 
 from spotfloor.ingest.pipeline import run_tick
 from spotfloor.ingest.poller import Poller
+from spotfloor.models import PriceKind
 from spotfloor.providers.aws import DEFAULT_INSTANCE_TYPES
 from spotfloor.providers.base import Provider
 from spotfloor.query import FloorPoint, RegionRow, floor_series, region_table
@@ -54,6 +55,14 @@ from spotfloor.web.sparkline import sparkline_svg
 logger = logging.getLogger(__name__)
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+
+# The exact note emitted when boto3 resolves no credentials. A constant rather than
+# a string the page greps for, because the page turns it into a modal that tells the
+# reader how to fix it -- and "did we mean *this* note" must not depend on wording.
+NO_CREDENTIALS_NOTE = (
+    "AWS is not configured (no credentials found), so no prices can be shown. "
+    "Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or run `aws configure`."
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,10 +138,7 @@ def build_providers(config: WebConfig) -> tuple[list[Provider], list[str]]:
         # or CI "configures" AWS and then fails every call.
         credentials = boto3.Session().get_credentials()
         if credentials is None or not credentials.access_key:
-            notes.append(
-                "AWS is not configured (no credentials found), so no prices can be "
-                "shown. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY."
-            )
+            notes.append(NO_CREDENTIALS_NOTE)
         else:
             from spotfloor.providers.aws import AwsProvider, CredsOwner
 
@@ -180,11 +186,19 @@ def build_entries(
     guaranteed to be bucketed against the identical time grid, so the sparklines are
     comparable to each other. The same grouping feeds the volatility columns, so the
     numbers next to a chart describe exactly the window the chart draws.
+
+    **History is spot-only; ``latest`` is not.** The current state has to include
+    on-demand, because that is the row's comparison column. The *history* must not:
+    the grouping key is (type, region), so an on-demand segment folded in here would
+    be counted as a spot price change and inflate the volatility column with moves
+    that never happened. On-demand has no published history anyway -- its stored
+    series accumulates forward from the first poll and is served, unmixed, by
+    ``/api/history``.
     """
     window = TimeRange(now - timedelta(days=config.history_days), now)
 
     grouped: dict[tuple[str, str], list[OfferingRecord]] = {}
-    for record in store.history(OfferingFilter(), window):
+    for record in store.history(OfferingFilter(price_kind=PriceKind.SPOT), window):
         grouped.setdefault(_series_key(record), []).append(record)
 
     rows = region_table(store.latest(OfferingFilter(), now=now), history=grouped)
@@ -251,6 +265,11 @@ def _row_json(entry: TableEntry) -> dict[str, Any]:
         "dearest_usd_hr": row.dearest_usd_hr,
         "dearest_zone": row.dearest_zone,
         "spread_pct": round(row.spread_pct, 2),
+        # `null` means the on-demand price was not observed (no pricing:GetProducts,
+        # or a region AWS quotes in a currency other than USD). It is not zero, and
+        # a null savings figure is not "spot saves you nothing".
+        "on_demand_usd_hr": row.on_demand_usd_hr,
+        "savings_pct": None if row.savings_pct is None else round(row.savings_pct, 2),
         "zone_count": row.zone_count,
         "zones": [
             {"zone": z.zone, "price_usd_hr": z.price_usd_hr} for z in row.zones
@@ -320,6 +339,10 @@ def create_app(
     async def lifespan(app: FastAPI) -> Iterator[None]:
         app.state.notes = list(notes or [])
         app.state.store = SqliteTimeSeriesStore(config.db_path) if owns_store else store
+        # Only ever set to False by an actual failed assembly below. A caller that
+        # opted out of polling has not told us anything about AWS, and guessing
+        # "broken" there would nag every snapshot render and every test.
+        app.state.aws_ready = True
 
         poller = None
         if poll:
@@ -327,6 +350,7 @@ def create_app(
             if selected is None:
                 selected, discovered = factory(config)
                 app.state.notes = [*app.state.notes, *discovered]
+            app.state.aws_ready = bool(selected)
             poller = Poller(selected, app.state.store, interval_s=config.poll_interval_s)
             poller.start()
 
@@ -395,6 +419,66 @@ def create_app(
     # Registered only outside snapshot mode: a static file has no server behind it,
     # so a refresh button there would be a control that silently does nothing.
     if not snapshot:
+
+        @app.post("/api/catalog")
+        def api_catalog(request: Request) -> JSONResponse:
+            """Everything the scan picker can offer: every instance type, every region.
+
+            **A POST for something that reads.** It has to be, because it asks AWS --
+            ``DescribeInstanceTypes`` unfiltered is the only honest source for "which
+            instance types exist", and this project's read-only guarantee is that
+            *every GET touches storage only*. Hardcoding a 1,354-entry list to keep it
+            a GET would be the same mistake as hardcoding the region list: a table
+            that is wrong the moment AWS ships a new family.
+
+            Memoized on app state after the first call (~1.9s), because the answer
+            changes when AWS launches hardware, not between two clicks.
+
+            Degrades rather than fails: with no credentials, or no permission, the
+            picker still opens offering what the store has already seen, plus a note
+            saying the full catalog was unreachable.
+            """
+            cached = getattr(request.app.state, "catalog", None)
+            if cached is not None:
+                return JSONResponse(cached)
+
+            now = datetime.now(UTC)
+            observed = build_entries(request.app.state.store, config, now=now)
+            payload: dict[str, Any] = {
+                "instance_types": sorted(
+                    {e.row.instance_type for e in observed} | set(config.instance_types)
+                ),
+                "regions": sorted({e.row.region for e in observed}),
+                "watchlist": sorted(config.instance_types),
+                "complete": False,
+                "note": "",
+            }
+
+            selected, discovered = factory(config)
+            provider = next(
+                (p for p in selected if hasattr(p, "full_catalog")), None
+            )
+            if provider is None:
+                payload["note"] = (
+                    "; ".join(discovered)
+                    or "No AWS provider is configured, so only types already stored are listed."
+                )
+                return JSONResponse(payload)
+
+            try:
+                payload["instance_types"] = sorted(provider.full_catalog())
+                payload["regions"] = sorted(provider.regions())
+                payload["complete"] = True
+            except Exception as exc:  # noqa: BLE001 - a shorter list, not a dead picker
+                logger.warning("catalog unavailable: %s", exc)
+                payload["note"] = (
+                    f"The full instance-type catalog could not be read ({exc}), so this "
+                    "list is only what has already been stored."
+                )
+                return JSONResponse(payload)
+
+            request.app.state.catalog = payload
+            return JSONResponse(payload)
 
         @app.post("/api/refresh")
         def api_refresh(
@@ -472,6 +556,21 @@ def create_app(
                 "generated_at": now,
                 "config": config,
                 "notes": request.app.state.notes,
+                # Drives a modal rather than another line of prose. With no
+                # credentials every table on the page is empty, and an empty table
+                # reads as "there is nothing to show" rather than "you have not
+                # finished setting this up" -- which is the single most common
+                # first-run failure.
+                #
+                # Two signals, because there are two ways to arrive here and the
+                # advice is the same for both: boto3 resolved no key at all, or the
+                # provider could not be assembled (a profile that does not exist, a
+                # malformed config). Matching only the first would leave the second
+                # staring at the same empty table with no prompt.
+                "needs_credentials": (
+                    NO_CREDENTIALS_NOTE in request.app.state.notes
+                    or not getattr(request.app.state, "aws_ready", True)
+                ),
                 "regions_seen": sorted({e.row.region for e in entries}),
                 "families_seen": sorted({e.row.instance_family for e in entries}),
                 "types_seen": sorted({e.row.instance_type for e in entries}),

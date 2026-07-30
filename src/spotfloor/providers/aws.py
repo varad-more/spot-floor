@@ -34,10 +34,26 @@ precisely when a price changes, and retains ~89 days (measured). Two things foll
 vCPUs everywhere, so the catalog is fetched once and reused for every region.
 Whether a type is *offered* in a region does vary -- and that needs no extra call,
 because a type absent from a region simply returns no price history there.
+
+---
+
+**On-demand is a different API and a different shape.** Spot comes from EC2's
+per-zone change-log; on-demand list prices come from the Price List Query API
+(:meth:`AwsProvider.on_demand_prices`), which is first-party, free, and needs no
+HTML scraping. Two consequences the rest of the code has to respect:
+
+* **on-demand has no zone.** AWS charges one on-demand rate per *region*, so the
+  intra-region spread that justifies this tool's whole roll-up simply does not
+  exist for it. Its offerings carry ``zone=None``, and nothing may render one.
+* **it has no published history.** There is no on-demand equivalent of
+  ``DescribeSpotPriceHistory``, so :meth:`history_segments` stays spot-only and the
+  on-demand series accumulates forward from the first poll. A backfilled chart that
+  claimed to know last month's list price would be inventing it.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -64,6 +80,22 @@ _SPS_CONSTRAINED = 4
 # Anything finer is float noise from JSON round-tripping, not a market move -- and
 # treating noise as a change would shatter every segment into per-quote fragments.
 _PRICE_QUANTUM = 1_000_000
+
+# The Price List Query API is a global catalog served from only two endpoints.
+# us-east-1 is the one every account can reach without opting a region in.
+_PRICING_REGION = "us-east-1"
+
+# Pins the on-demand SKU to the same product the spot side prices: shared-tenancy
+# Linux, no bundled software, on capacity that is actually being used. All four are
+# load-bearing -- without them one instance type returns a dozen SKUs (Windows,
+# SUSE, dedicated tenancy, SQL Server, reserved-unused) and "the on-demand price"
+# silently becomes whichever one happened to sort first.
+_ON_DEMAND_FILTERS: tuple[tuple[str, str], ...] = (
+    ("operatingSystem", "Linux"),
+    ("tenancy", "Shared"),
+    ("preInstalledSw", "NA"),
+    ("capacitystatus", "Used"),
+)
 
 # A bounded watchlist across the families people actually shop between. Bounded on
 # purpose: us-east-1 alone lists 1,354 instance types, and 17 regions x 1,354 types
@@ -135,6 +167,13 @@ def _default_client_factory(region: str) -> Any:
     return boto3.session.Session().client("ec2", region_name=region)
 
 
+def _default_pricing_factory() -> Any:
+    """A Price List Query client. Separate from the EC2 factory: different service."""
+    import boto3
+
+    return boto3.session.Session().client("pricing", region_name=_PRICING_REGION)
+
+
 def enabled_regions(client: Any) -> list[str]:
     """Regions this account can actually call.
 
@@ -157,6 +196,7 @@ class AwsProvider:
         regions: Sequence[str] | None = None,
         instance_types: Sequence[str] = DEFAULT_INSTANCE_TYPES,
         client_factory: Callable[[str], Any] | None = None,
+        pricing_factory: Callable[[], Any] | None = None,
         creds_owner: CredsOwner = CredsOwner.APP,
         catalog_region: str = "us-east-1",
         max_workers: int = 8,
@@ -172,13 +212,17 @@ class AwsProvider:
         self._regions = list(regions) if regions is not None else None
         self._instance_types = tuple(instance_types)
         self._client_factory = client_factory or _default_client_factory
+        self._pricing_factory = pricing_factory or _default_pricing_factory
         self._creds_owner = creds_owner
         self._catalog_region = catalog_region
         self._max_workers = max_workers
 
         self._clients: dict[str, Any] = {}
         self._catalog: dict[str, InstanceSpec] | None = None
+        self._all_types: list[str] | None = None
         self._failures: dict[str, str] = {}
+        self._pricing_failure: str | None = None
+        self._on_demand: dict[tuple[str, str], float] | None = None
         self._scores: dict[str, tuple[Availability, float | None]] = {}
 
     # --- wiring --------------------------------------------------------------
@@ -199,12 +243,20 @@ class AwsProvider:
 
         A failed region must never just vanish from the table -- an absent region is
         indistinguishable from a region with no capacity, and those are very
-        different claims.
+        different claims. The same reasoning covers a blank savings column: it must
+        say *why* it is blank rather than read as "spot saves you nothing".
         """
-        return [
+        notes = [
             f"{region} could not be priced ({error}), so it is absent from the table."
             for region, error in sorted(self._failures.items())
         ]
+        if self._pricing_failure:
+            notes.append(
+                f"On-demand list prices are unavailable ({self._pricing_failure}), so "
+                "the on-demand and savings columns are blank. Add pricing:GetProducts "
+                "to the IAM policy (docs/iam-policy.json)."
+            )
+        return notes
 
     # --- catalog -------------------------------------------------------------
 
@@ -249,6 +301,34 @@ class AwsProvider:
 
         self._catalog = catalog
         return catalog
+
+    def full_catalog(self) -> list[str]:
+        """Every instance type name EC2 offers, for the scan picker to offer.
+
+        Deliberately not :meth:`catalog`, which is filtered to the watchlist and
+        returns specs. This returns *names only* -- 1,354 of them in us-east-1 --
+        because a picker has to be able to offer a type before anything has ever
+        priced it. Without this you can only rescan what you already have, which is
+        the opposite of what a picker is for.
+
+        Discovered rather than hardcoded, for the same reason regions are: AWS ships
+        new families, and a list baked into this repo would be wrong from the next
+        launch announcement onward.
+
+        One region is enough. Which types a region *offers* varies, but asking for
+        one it does not offer costs nothing -- the scan simply returns no quotes for
+        it, the same as any unpriced type.
+        """
+        if self._all_types is None:
+            paginator = self._client(self._catalog_region).get_paginator(
+                "describe_instance_types"
+            )
+            self._all_types = sorted(
+                spec["InstanceType"]
+                for page in paginator.paginate()
+                for spec in page["InstanceTypes"]
+            )
+        return self._all_types
 
     @staticmethod
     def _spec(instance_type: str, spec: dict[str, Any]) -> InstanceSpec:
@@ -324,6 +404,138 @@ class AwsProvider:
             availability = Availability.UNAVAILABLE
         return availability, best / 10
 
+    # --- on-demand list prices -----------------------------------------------
+
+    def on_demand_prices(self) -> dict[tuple[str, str], float]:
+        """``(instance_type, region) -> on-demand $/hr`` from the Price List API.
+
+        This is the official, free, first-party source. It needs no scraping and no
+        hand-maintained price table, and the ``regionCode`` attribute means no
+        long-name mapping ("US East (N. Virginia)") has to exist in order to be
+        wrong.
+
+        **Omitting the region filter is what makes it affordable.** One paginated
+        call returns every region for an instance type -- measured at 0.76s and a
+        single page for ``m5.large`` across 33 USD regions -- so the cost is
+        O(types), not O(types x regions). A 40-type watchlist is 40 calls, not 680.
+
+        **Non-USD regions are skipped, never converted.** The China regions quote
+        CNY, and turning that into dollars would require an exchange rate we did not
+        observe. That is the same rule that keeps an unobserved bucket ``None``
+        rather than zero: absence is not a value.
+
+        A failure here degrades to an empty mapping and a note rather than raising.
+        Losing the savings column must not take the spot table down with it.
+        """
+        if self._on_demand is not None:
+            return self._on_demand
+
+        self._pricing_failure = None
+        prices: dict[tuple[str, str], float] = {}
+        with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
+            futures = {
+                pool.submit(self._on_demand_for_type, instance_type): instance_type
+                for instance_type in self._instance_types
+            }
+            for future, instance_type in futures.items():
+                try:
+                    prices.update(future.result())
+                except Exception as exc:  # noqa: BLE001 - a missing column, not a dead app
+                    logger.warning(
+                        "aws: on-demand price unavailable for %s: %s", instance_type, exc
+                    )
+                    self._pricing_failure = _error_code(exc)
+
+        # ponytail: memoized for the life of the provider. On-demand list prices
+        # change a few times a year, not every five minutes, and the poller holds one
+        # provider for the process lifetime -- so a restart is the refresh. Add a TTL
+        # if a long-running server ever needs to see a mid-run reprice.
+        self._on_demand = prices
+        return prices
+
+    def _on_demand_for_type(self, instance_type: str) -> dict[tuple[str, str], float]:
+        """Every region's on-demand rate for one instance type, in one paginated call.
+
+        Builds its own client rather than sharing one across the pool: botocore
+        recommends a client per thread, and this runs once per provider, so 40
+        constructions cost less than reasoning about whether sharing is safe.
+        """
+        client = self._pricing_factory()
+        filters = [
+            {"Type": "TERM_MATCH", "Field": field, "Value": value}
+            for field, value in (("instanceType", instance_type), *_ON_DEMAND_FILTERS)
+        ]
+
+        found: dict[tuple[str, str], float] = {}
+        for page in client.get_paginator("get_products").paginate(
+            ServiceCode="AmazonEC2", Filters=filters
+        ):
+            for blob in page["PriceList"]:
+                product = json.loads(blob)
+                region = product["product"]["attributes"].get("regionCode")
+                if not region:
+                    continue
+                for term in product.get("terms", {}).get("OnDemand", {}).values():
+                    for dimension in term.get("priceDimensions", {}).values():
+                        per_unit = dimension.get("pricePerUnit", {})
+                        if "USD" not in per_unit:
+                            continue  # CNY-quoted region; see the docstring.
+                        price = float(per_unit["USD"])
+                        # A $0.00 dimension is a free-tier or placeholder SKU, not a
+                        # price -- and `price_usd_hr` is constrained to be positive.
+                        if price > 0:
+                            found.setdefault((instance_type, region), price)
+        return found
+
+    def _on_demand_offerings(
+        self, *, observed_at: datetime, regions: Iterable[str]
+    ) -> list[InstanceOffering]:
+        """On-demand prices as offerings, so they are stored as their own series.
+
+        Its own :class:`PriceKind` rather than a column bolted onto the spot row,
+        because ``series_key`` already treats price kind as identity: on-demand and
+        spot are different products with different durability, and folding them into
+        one series would make it look like a single price thrashing by 10x.
+
+        ``regions`` is the set that actually answered, not every configured region.
+        The Price List API is a global catalog and will happily quote a region this
+        account cannot call, but :attr:`notes` has already promised that a failed
+        region is "absent from the table" -- emitting an on-demand-only row for it
+        would make that note false and would price capacity you cannot launch.
+        """
+        catalog = self.catalog()
+        wanted = set(regions)
+
+        offerings: list[InstanceOffering] = []
+        for (instance_type, region), price in self.on_demand_prices().items():
+            spec = catalog.get(instance_type)
+            if spec is None or region not in wanted:
+                continue
+            offerings.append(
+                InstanceOffering(
+                    provider=self.name,
+                    instance_type=instance_type,
+                    region=region,
+                    # No zone, deliberately: AWS charges one on-demand rate for the
+                    # whole region. Naming a zone would fabricate a price difference
+                    # between zones that does not exist for this product.
+                    zone=None,
+                    price_usd_hr=price,
+                    price_kind=PriceKind.ON_DEMAND,
+                    # On-demand capacity is not guaranteed either -- AWS returns
+                    # InsufficientInstanceCapacity often enough that claiming
+                    # otherwise would be the same unearned promise we refuse on spot.
+                    availability=Availability.UNKNOWN,
+                    availability_score=None,
+                    observed_at=observed_at,
+                    gpu_model=spec.gpu_model,
+                    gpu_count=spec.gpu_count,
+                    vcpus=spec.vcpus,
+                    memory_gib=spec.memory_gib,
+                )
+            )
+        return offerings
+
     # --- raw quotes ----------------------------------------------------------
 
     def _quotes(self, region: str, start: datetime) -> list[dict[str, Any]]:
@@ -397,12 +609,17 @@ class AwsProvider:
     # --- the two read paths --------------------------------------------------
 
     def fetch(self) -> list[InstanceOffering]:
-        """The current spot price per (instance type, zone) across all regions."""
+        """Current spot prices per (type, zone), plus the on-demand rate per region.
+
+        Both kinds come back from one call because both belong in one tick: the
+        savings figure is only meaningful when the two prices were read together.
+        """
         observed_at = datetime.now(UTC)
         catalog = self.catalog()
         offerings: list[InstanceOffering] = []
 
-        for region, quotes in self._per_region(observed_at - _CURRENT_WINDOW).items():
+        per_region = self._per_region(observed_at - _CURRENT_WINDOW)
+        for region, quotes in per_region.items():
             newest: dict[tuple[str, str], dict[str, Any]] = {}
             for quote in quotes:
                 key = (quote["InstanceType"], quote["AvailabilityZone"])
@@ -423,6 +640,10 @@ class AwsProvider:
                         quote, region, spec, price=price, observed_at=observed_at
                     )
                 )
+
+        offerings.extend(
+            self._on_demand_offerings(observed_at=observed_at, regions=per_region)
+        )
         return offerings
 
     def history_segments(self, *, days: int = 30) -> list[OfferingRecord]:
@@ -437,6 +658,9 @@ class AwsProvider:
         unchanged price and two touching segments at one price are one segment.
         Coalescing here rather than in the store is deliberate: only the caller
         knows whether adjacent intervals are contiguous.
+
+        Spot only. AWS publishes no on-demand price history, so backfilling one
+        would mean inventing what last month's list price was.
         """
         now = datetime.now(UTC)
         catalog = self.catalog()

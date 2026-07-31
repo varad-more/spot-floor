@@ -7,10 +7,86 @@
    The meta tag reloads unconditionally: it threw away your plotted series, filters,
    sort order and column widths every 5 minutes, and closed any open dialog with it.
    See the refresh block at the end of the chart script. #}
-<title>EC2 Spot Prices — find the cheapest region for any GPU or EC2 instance</title>
-<meta name="description" content="Compare AWS EC2 spot and on-demand prices for every
-  instance type across every region — GPU boxes included. Every price names the
-  availability zone it came from.">
+{# Written once and reused by the canonical link, both social cards and the
+   structured data below. They were three copies of the same two sentences the
+   moment they existed separately, and the copy that drifts is always the one no
+   human ever looks at. #}
+{# `site_url` comes from the app (SITE_URL), because the snapshot script needs the
+   same host for robots.txt and the sitemap. #}
+{% set page_title = 'EC2 Spot Prices — find the cheapest region for any GPU or EC2 instance' %}
+{% set page_desc = 'Compare AWS EC2 spot and on-demand prices for every instance type across every region — GPU boxes included. Every price names the availability zone it came from.' %}
+<title>{{ page_title }}</title>
+<meta name="description" content="{{ page_desc }}">
+
+{# Not for the github.io host -- Pages already 301s that to the custom domain. This
+   is for the copies redirects never catch: a `?utm_source=` on a shared link, an
+   http:// referral, a syndicated scrape. Each is a distinct URL serving identical
+   content, and without a canonical they split whatever authority the page earns. #}
+<link rel="canonical" href="{{ site_url }}/">
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="EC2 Spot Prices">
+<meta property="og:url" content="{{ site_url }}/">
+<meta property="og:title" content="{{ page_title }}">
+<meta property="og:description" content="{{ page_desc }}">
+<meta property="og:image" content="{{ site_url }}/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="EC2 Spot Prices: spot and on-demand pricing for every EC2 instance type, broken down by region and availability zone.">
+<meta property="og:locale" content="en_US">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ page_title }}">
+<meta name="twitter:description" content="{{ page_desc }}">
+<meta name="twitter:image" content="{{ site_url }}/og.png">
+<meta name="twitter:image:alt" content="EC2 Spot Prices: spot and on-demand pricing for every EC2 instance type, broken down by region and availability zone.">
+
+{# `Dataset`, not `WebPage`. This is a price table with a machine-readable
+   download attached, which is the shape Google Dataset Search indexes -- a
+   vertical with far less competition than the web results this page would
+   otherwise fight AWS's own Spot Instance Advisor for.
+
+   Every string goes through `tojson` rather than being hand-quoted. Autoescape
+   turns an apostrophe into `&#39;`, and a JSON-LD parser does not decode HTML
+   entities, so one apostrophe added to the copy above would silently invalidate
+   the whole block. `tojson` is the filter that is correct in both contexts. #}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "Dataset",
+  "name": "AWS EC2 spot and on-demand prices by region and availability zone",
+  "description": {{ page_desc|tojson }},
+  "url": {{ (site_url + '/')|tojson }},
+  "sameAs": "https://github.com/varad-more/ec2-spot-prices",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "creator": {
+    "@type": "Person",
+    "name": "Varad More",
+    "url": "https://varadmore.me"
+  },
+  "dateModified": {{ generated_at.isoformat()|tojson }},
+  "temporalCoverage": {{ (history_start.strftime('%Y-%m-%d') + '/' + generated_at.strftime('%Y-%m-%d'))|tojson }},
+  "measurementTechnique": "AWS EC2 DescribeSpotPriceHistory, compared against public on-demand list prices",
+  "keywords": [
+    "AWS", "EC2", "spot instances", "spot price history", "cloud GPU pricing",
+    "instance pricing", "availability zone", "cloud cost optimization"
+  ],
+  "variableMeasured": [
+    {"@type": "PropertyValue", "name": "Spot price", "unitText": "USD per hour"},
+    {"@type": "PropertyValue", "name": "On-demand price", "unitText": "USD per hour"},
+    {"@type": "PropertyValue", "name": "Savings versus on-demand", "unitText": "percent"},
+    {"@type": "PropertyValue", "name": "Intra-region price spread", "unitText": "percent"}
+  ],
+  "distribution": [
+    {
+      "@type": "DataDownload",
+      "name": "Full market snapshot",
+      "contentUrl": {{ (site_url + '/api/market.json')|tojson }},
+      "encodingFormat": "application/json"
+    }
+  ]
+}
+</script>
 <meta name="color-scheme" content="light dark">
 <script>
   /* Applied before first paint: reading the stored choice later flashes the other

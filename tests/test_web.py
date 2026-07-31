@@ -26,6 +26,7 @@ from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
 from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
 from ec2_spot_prices.web.app import (
     NO_CREDENTIALS_NOTE,
+    SITE_URL,
     SPOT_FLOOR_RATIO,
     WebConfig,
     _FLOOR_TOLERANCE,
@@ -792,6 +793,14 @@ def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
 
     body = snapshot_client.get("/").text
 
+    # `<link rel="canonical">` is the one external href that is neither a
+    # subresource nor a click target -- it names the page's own address for search
+    # engines and the browser never requests it. Exempted by name, and pinned to the
+    # exact URL, so the patterns below keep their full strength.
+    canonical = re.findall(r'<link rel="canonical" href="([^"]+)">', body)
+    assert canonical == [f"{SITE_URL}/"], canonical
+    body = body.replace(f'<link rel="canonical" href="{SITE_URL}/">', "")
+
     # Anything that would issue a network request for a subresource.
     assert not re.search(r"<script[^>]+\bsrc\s*=", body), "external script"
     assert not re.search(r"<link[^>]+\bhref\s*=\s*[\"']https?://", body), "external stylesheet"
@@ -803,6 +812,47 @@ def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
     for match in re.finditer(r'href="(https?://[^"]+)"', body):
         start = body.rfind("<", 0, match.start())
         assert body[start : start + 3] == "<a ", f"non-anchor external href: {match.group(1)}"
+
+
+def test_the_structured_data_is_valid_json(snapshot_client) -> None:
+    """The JSON-LD block parses, and says the things a dataset listing needs.
+
+    This fails silently in production: a search engine that cannot parse the block
+    skips it and reports nothing, so the page looks fine in a browser while the
+    listing quietly never appears. The specific hazard is autoescape -- an
+    apostrophe added to the description would render as ``&#39;``, which a JSON-LD
+    parser does not decode, and the block would be invalid from that commit on.
+    """
+    body = snapshot_client.get("/").text
+
+    blob = re.search(r'<script type="application/ld\+json">(.*?)</script>', body, re.S)
+    assert blob, "no structured data on the page"
+    data = json.loads(blob.group(1))
+
+    assert data["@type"] == "Dataset"
+    assert data["url"] == f"{SITE_URL}/"
+    assert data["isAccessibleForFree"] is True
+    # The download has to be absolute and has to be the file the snapshot writes:
+    # Dataset Search fetches it to confirm the distribution actually exists.
+    assert data["distribution"][0]["contentUrl"] == f"{SITE_URL}/api/market.json"
+    assert data["variableMeasured"], "no measured variables declared"
+
+    # `temporalCoverage` is an ISO 8601 interval, not a single date -- it is what
+    # tells a listing the prices cover a window rather than one instant.
+    start, _, end = data["temporalCoverage"].partition("/")
+    assert datetime.strptime(start, "%Y-%m-%d") <= datetime.strptime(end, "%Y-%m-%d")
+
+
+def test_the_social_card_urls_are_absolute(snapshot_client) -> None:
+    """Scrapers do not resolve relative image paths; a bare `/og.png` renders blank."""
+    body = snapshot_client.get("/").text
+
+    for prop in ("og:image", "og:url"):
+        value = re.search(rf'property="{prop}" content="([^"]+)"', body).group(1)
+        assert value.startswith(f"{SITE_URL}/"), f"{prop} is not absolute: {value}"
+
+    twitter = re.search(r'name="twitter:image" content="([^"]+)"', body).group(1)
+    assert twitter.startswith(f"{SITE_URL}/"), twitter
 
 
 # --- config ------------------------------------------------------------------

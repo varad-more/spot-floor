@@ -72,6 +72,13 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
 
+# Where the published snapshot lives. The page's canonical link, both social cards
+# and the structured data all build absolute URLs from this, and `scripts/snapshot.py`
+# imports it for robots.txt and the sitemap -- so the host is stated once. A second
+# copy in the snapshot script would be the one that still said `spotfloor` after a
+# rename, and nothing in the test suite would have noticed.
+SITE_URL = "https://ec2-spot-prices.varadmore.me"
+
 # The exact note emitted when boto3 resolves no credentials. A constant rather than
 # a string the page greps for, because the page turns it into a modal that tells the
 # reader how to fix it -- and "did we mean *this* note" must not depend on wording.
@@ -769,6 +776,11 @@ def create_app(
             context={
                 "entries": entries,
                 "generated_at": now,
+                # Only the structured data reads this, for `temporalCoverage`.
+                # Same window the chart and `/api/history` already use, taken from
+                # the same config rather than restated as a literal in the template.
+                "history_start": now - timedelta(days=config.history_days),
+                "site_url": SITE_URL,
                 "config": config,
                 "notes": request.app.state.notes,
                 # Drives a modal rather than another line of prose. With no

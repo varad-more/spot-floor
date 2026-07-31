@@ -39,7 +39,7 @@ import httpx
 from ec2_spot_prices.ingest.pipeline import run_tick
 from ec2_spot_prices.storage.base import OfferingFilter
 from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
-from ec2_spot_prices.web.app import WebConfig, build_providers, create_app
+from ec2_spot_prices.web.app import SITE_URL, WebConfig, build_providers, create_app
 
 logger = logging.getLogger("snapshot")
 
@@ -224,6 +224,46 @@ def main() -> int:
 
     # Pages would otherwise run the output through Jekyll.
     (out / ".nojekyll").write_text("")
+
+    # Written here rather than kept in `public/`, because `--out` is deleted
+    # wholesale at the top of this function -- a file committed straight into the
+    # published directory survives exactly until the next snapshot.
+    #
+    # `/api/history/` is disallowed: it is 1,345 JSON files that nothing links to,
+    # and letting a crawler walk them spends the site's crawl budget on documents
+    # no one searches for. `market.json` stays crawlable -- Google Dataset Search
+    # fetches it to verify the `distribution` declared in the page's structured
+    # data, and blocking it would invalidate the one listing that costs nothing.
+    (out / "robots.txt").write_text(
+        "User-agent: *\n"
+        "Allow: /\n"
+        "Disallow: /api/history/\n"
+        "\n"
+        f"Sitemap: {SITE_URL}/sitemap.xml\n",
+        encoding="utf-8",
+    )
+
+    # One URL, so the sitemap is not for discovery -- it is for `lastmod`. The page
+    # is republished with new prices far more often than a crawler would guess from
+    # a static HTML file, and this is the only place that says so.
+    (out / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        "  <url>\n"
+        f"    <loc>{SITE_URL}/</loc>\n"
+        f"    <lastmod>{now:%Y-%m-%d}</lastmod>\n"
+        "  </url>\n"
+        "</urlset>\n",
+        encoding="utf-8",
+    )
+
+    # The social card is fixed artwork, not data, so it is a committed asset rather
+    # than something rendered on every run -- which keeps a headless browser out of
+    # this script's dependencies. It only changes when the wordmark does.
+    og = Path(__file__).resolve().parent.parent / "assets" / "og.png"
+    shutil.copyfile(og, out / "og.png")
+
+    written.extend([out / "robots.txt", out / "sitemap.xml", out / "og.png"])
 
     size = sum(p.stat().st_size for p in out.rglob("*") if p.is_file())
     print(

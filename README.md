@@ -11,7 +11,7 @@ you the cheapest zone by name, and how much the regional roll-up hid.
 Runs entirely on your machine against your own AWS account. The API calls it makes
 are free.
 
-### [→ See a sample page](https://varadmore.me/spot-floor/)
+### [→ See a sample page](https://ec2-spot-prices.varadmore.me/)
 
 That page is **real data — every EC2 instance type, priced across every region your
 account can reach — captured and frozen.** It is a static snapshot, not a live feed:
@@ -102,8 +102,8 @@ region.
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
 # 2. Clone and install
-git clone https://github.com/varad-more/spot-floor.git
-cd spot-floor
+git clone https://github.com/varad-more/ec2-spot-prices.git
+cd ec2-spot-prices
 uv sync
 
 # 3. Give AWS read-only permissions (see below), then verify

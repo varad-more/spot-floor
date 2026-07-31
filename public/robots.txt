@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /api/history/
+
+Sitemap: https://ec2-spot-prices.varadmore.me/sitemap.xml

@@ -19,18 +19,17 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Only `publish` gets `pages: write` and `id-token: write`. `test` installs and
+# executes third-party dependency code, so it runs with a read-only token -- a
+# compromised package in the tree should not be able to deploy the site.
 permissions:
   contents: read
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v7
 
@@ -58,6 +57,16 @@ jobs:
     needs: test
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    # Scoped to this job, not the workflow. At workflow level the group also
+    # covered `test`, so a third push while two runs were live cancelled the
+    # middle one while it was still pending -- and that commit's tests never ran.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

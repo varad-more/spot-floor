@@ -18,7 +18,7 @@ and the sparkline. Both keep their rules, and the tests follow them there -- wha
 page *knows* is asserted against the payload, what it *does* against the rendering
 code.
 
-The template's job is to render :mod:`spotfloor.query` output faithfully. Four
+The template's job is to render :mod:`ec2_spot_prices.query` output faithfully. Four
 things it must not do, all of which a dashboard does by default:
 
 * show a blank cell for availability -- it renders an explicit ``unknown``, because
@@ -39,7 +39,7 @@ Deeper history stays available per instance type through
 
 At full catalogue scope a 30-day backfill is ~7M segments and a multi-gigabyte
 database; 7 days is ~1.7M and matches what the page actually draws. Set
-``SPOTFLOOR_BACKFILL_DAYS`` deliberately rather than inheriting 30 by accident.
+``EC2_SPOT_PRICES_BACKFILL_DAYS`` deliberately rather than inheriting 30 by accident.
 """
 
 from __future__ import annotations
@@ -58,15 +58,15 @@ from fastapi import Body, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 
-from spotfloor.ingest.pipeline import run_tick
-from spotfloor.ingest.poller import Poller
-from spotfloor.models import PriceKind
-from spotfloor.providers.aws import DEFAULT_INSTANCE_TYPES
-from spotfloor.providers.base import Provider
-from spotfloor.query import FloorPoint, RegionRow, floor_series, region_table
-from spotfloor.storage.base import OfferingFilter, OfferingRecord, TimeRange, TimeSeriesStore
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.sparkline import sparkline_svg
+from ec2_spot_prices.ingest.pipeline import run_tick
+from ec2_spot_prices.ingest.poller import Poller
+from ec2_spot_prices.models import PriceKind
+from ec2_spot_prices.providers.aws import DEFAULT_INSTANCE_TYPES
+from ec2_spot_prices.providers.base import Provider
+from ec2_spot_prices.query import FloorPoint, RegionRow, floor_series, region_table
+from ec2_spot_prices.storage.base import OfferingFilter, OfferingRecord, TimeRange, TimeSeriesStore
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.web.sparkline import sparkline_svg
 
 logger = logging.getLogger(__name__)
 
@@ -83,14 +83,14 @@ NO_CREDENTIALS_NOTE = (
 
 @dataclass(frozen=True, slots=True)
 class WebConfig:
-    db_path: str = "spotfloor.db"
+    db_path: str = "ec2-spot-prices.db"
     # None means "every region this account has enabled", discovered at runtime.
     regions: tuple[str, ...] | None = None
     # None means "every instance type EC2 offers", discovered the same way. It is
     # the default because the alternative -- a curated list -- is wrong the moment
     # someone looks for a type nobody thought to curate, which is exactly how
     # g5.2xlarge came to be missing from a page that showed g5.xlarge and
-    # g5.12xlarge. Narrow it with SPOTFLOOR_INSTANCE_TYPES when you want a small,
+    # g5.12xlarge. Narrow it with EC2_SPOT_PRICES_INSTANCE_TYPES when you want a small,
     # fast local run; see DEFAULT_INSTANCE_TYPES for a ready-made short list.
     instance_types: tuple[str, ...] | None = None
     poll_interval_s: int = 300
@@ -128,14 +128,14 @@ class WebConfig:
             if raw:
                 overrides[field] = int(raw)
 
-        if db := os.getenv("SPOTFLOOR_DB"):
+        if db := os.getenv("EC2_SPOT_PRICES_DB"):
             overrides["db_path"] = db
-        csv("SPOTFLOOR_REGIONS", "regions")
-        csv("SPOTFLOOR_INSTANCE_TYPES", "instance_types")
-        integer("SPOTFLOOR_POLL_INTERVAL_S", "poll_interval_s")
-        integer("SPOTFLOOR_HISTORY_DAYS", "history_days")
-        integer("SPOTFLOOR_BACKFILL_DAYS", "backfill_days")
-        integer("SPOTFLOOR_BUCKETS", "buckets")
+        csv("EC2_SPOT_PRICES_REGIONS", "regions")
+        csv("EC2_SPOT_PRICES_INSTANCE_TYPES", "instance_types")
+        integer("EC2_SPOT_PRICES_POLL_INTERVAL_S", "poll_interval_s")
+        integer("EC2_SPOT_PRICES_HISTORY_DAYS", "history_days")
+        integer("EC2_SPOT_PRICES_BACKFILL_DAYS", "backfill_days")
+        integer("EC2_SPOT_PRICES_BUCKETS", "buckets")
 
         return cls(**overrides)
 
@@ -162,7 +162,7 @@ def build_providers(config: WebConfig) -> tuple[list[Provider], list[str]]:
         if credentials is None or not credentials.access_key:
             notes.append(NO_CREDENTIALS_NOTE)
         else:
-            from spotfloor.providers.aws import AwsProvider, CredsOwner
+            from ec2_spot_prices.providers.aws import AwsProvider, CredsOwner
 
             providers.append(
                 AwsProvider(
@@ -569,7 +569,7 @@ def create_app(
             if owns_store:
                 app.state.store.close()
 
-    app = FastAPI(title="spotfloor", lifespan=lifespan)
+    app = FastAPI(title="ec2_spot_prices", lifespan=lifespan)
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:

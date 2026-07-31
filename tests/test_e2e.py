@@ -12,12 +12,12 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from spotfloor.alerts.evaluator import evaluate
-from spotfloor.alerts.rules import AlertRule, EventKind, RuleState, RuleStatus
-from spotfloor.ingest.pipeline import run_tick
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingFilter, TimeRange
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.alerts.evaluator import evaluate
+from ec2_spot_prices.alerts.rules import AlertRule, EventKind, RuleState, RuleStatus
+from ec2_spot_prices.ingest.pipeline import run_tick
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingFilter, TimeRange
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
 
 T0 = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 

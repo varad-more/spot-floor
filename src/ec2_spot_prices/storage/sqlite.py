@@ -35,8 +35,8 @@ import threading
 from datetime import UTC, datetime
 from typing import Any, Sequence
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import (
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import (
     OfferingFilter,
     OfferingRecord,
     TimeRange,
@@ -108,11 +108,11 @@ def state_hash(offering: InstanceOffering) -> str:
 
 
 class SqliteTimeSeriesStore:
-    """SQLite implementation of :class:`~spotfloor.storage.base.TimeSeriesStore`."""
+    """SQLite implementation of :class:`~ec2_spot_prices.storage.base.TimeSeriesStore`."""
 
     def __init__(
         self,
-        path: str = "spotfloor.db",
+        path: str = "ec2-spot-prices.db",
         *,
         gap_ttl_s: int = 900,
         max_span_s: int = 86_400,
@@ -296,7 +296,7 @@ class SqliteTimeSeriesStore:
 
         Segments are *not* merged with adjacent stored ones. A caller assembling a
         history stream is responsible for coalescing equal consecutive prices before
-        it gets here (:meth:`spotfloor.providers.aws.AwsProvider.history_segments`
+        it gets here (:meth:`ec2_spot_prices.providers.aws.AwsProvider.history_segments`
         does), because only the caller knows whether two intervals are contiguous or
         separated by a gap it never observed.
         """

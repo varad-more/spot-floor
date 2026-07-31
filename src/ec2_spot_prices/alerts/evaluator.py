@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
-from spotfloor.alerts.rules import (
+from ec2_spot_prices.alerts.rules import (
     MISSING,
     AlertEvent,
     AlertRule,
@@ -27,7 +27,7 @@ from spotfloor.alerts.rules import (
     RuleState,
     RuleStatus,
 )
-from spotfloor.storage.base import OfferingRecord
+from ec2_spot_prices.storage.base import OfferingRecord
 
 logger = logging.getLogger(__name__)
 

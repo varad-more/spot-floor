@@ -14,9 +14,9 @@ from typing import Sequence
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from spotfloor.ingest.pipeline import TickReport, run_tick
-from spotfloor.providers.base import Provider
-from spotfloor.storage.base import TimeSeriesStore
+from ec2_spot_prices.ingest.pipeline import TickReport, run_tick
+from ec2_spot_prices.providers.base import Provider
+from ec2_spot_prices.storage.base import TimeSeriesStore
 
 logger = logging.getLogger(__name__)
 

@@ -3,18 +3,18 @@
     uv run python scripts/serve.py
 
 Environment:
-    SPOTFLOOR_DB              sqlite path      (default spotfloor.db)
-    SPOTFLOOR_REGIONS         comma-separated  (default: every enabled region)
-    SPOTFLOOR_INSTANCE_TYPES  comma-separated  (default: every type EC2 offers)
-    SPOTFLOOR_POLL_INTERVAL_S seconds          (default 300)
-    SPOTFLOOR_HISTORY_DAYS    chart window     (default 7)
-    SPOTFLOOR_BACKFILL_DAYS   initial history  (default 30)
-    SPOTFLOOR_PORT                             (default 8000)
+    EC2_SPOT_PRICES_DB              sqlite path      (default ec2-spot-prices.db)
+    EC2_SPOT_PRICES_REGIONS         comma-separated  (default: every enabled region)
+    EC2_SPOT_PRICES_INSTANCE_TYPES  comma-separated  (default: every type EC2 offers)
+    EC2_SPOT_PRICES_POLL_INTERVAL_S seconds          (default 300)
+    EC2_SPOT_PRICES_HISTORY_DAYS    chart window     (default 7)
+    EC2_SPOT_PRICES_BACKFILL_DAYS   initial history  (default 30)
+    EC2_SPOT_PRICES_PORT                             (default 8000)
 
 Two regions and a couple of types, for a fast start:
 
-    SPOTFLOOR_REGIONS=us-east-1,us-west-2 \\
-    SPOTFLOOR_INSTANCE_TYPES=m5.large,p5.48xlarge \\
+    EC2_SPOT_PRICES_REGIONS=us-east-1,us-west-2 \\
+    EC2_SPOT_PRICES_INSTANCE_TYPES=m5.large,p5.48xlarge \\
     uv run python scripts/serve.py
 
 Pass ``--backfill`` to load deep history before serving. Without it the charts
@@ -33,8 +33,8 @@ import time
 
 import uvicorn
 
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import WebConfig, build_providers, create_app
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.web.app import WebConfig, build_providers, create_app
 
 logger = logging.getLogger("serve")
 
@@ -69,11 +69,11 @@ def backfill(config: WebConfig) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Serve the spotfloor dashboard.")
+    parser = argparse.ArgumentParser(description="Serve the ec2_spot_prices dashboard.")
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="load SPOTFLOOR_BACKFILL_DAYS of history before serving",
+        help="load EC2_SPOT_PRICES_BACKFILL_DAYS of history before serving",
     )
     args = parser.parse_args()
 
@@ -87,10 +87,10 @@ def main() -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     config = WebConfig.from_env()
-    port = int(os.getenv("SPOTFLOOR_PORT", "8000"))
+    port = int(os.getenv("EC2_SPOT_PRICES_PORT", "8000"))
 
     regions = ",".join(config.regions) if config.regions else "all enabled"
-    print(f"spotfloor -> http://127.0.0.1:{port}")
+    print(f"ec2_spot_prices -> http://127.0.0.1:{port}")
     print(f"  db={config.db_path}  poll={config.poll_interval_s}s  regions={regions}")
     types = (f"{len(config.instance_types)} instance types"
              if config.instance_types else "all instance types")

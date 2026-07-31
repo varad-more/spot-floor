@@ -20,7 +20,7 @@ from typing import Final
 
 from pydantic import BaseModel, Field, model_validator
 
-from spotfloor.models import Availability, obtainability_rank
+from ec2_spot_prices.models import Availability, obtainability_rank
 
 
 class Missing:

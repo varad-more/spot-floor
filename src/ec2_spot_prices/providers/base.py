@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from spotfloor.models import InstanceOffering
+from ec2_spot_prices.models import InstanceOffering
 
 
 @runtime_checkable

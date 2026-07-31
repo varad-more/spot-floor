@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from spotfloor.web.sparkline import sparkline_svg
+from ec2_spot_prices.web.sparkline import sparkline_svg
 
 
 def polylines(svg: str) -> list[str]:

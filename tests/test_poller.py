@@ -15,8 +15,8 @@ from datetime import datetime
 
 import pytest
 
-from spotfloor.ingest.poller import Poller
-from spotfloor.storage.base import WriteResult
+from ec2_spot_prices.ingest.poller import Poller
+from ec2_spot_prices.storage.base import WriteResult
 
 
 class SilentProvider:
@@ -108,7 +108,7 @@ def test_stop_is_final(poller_store) -> None:
 def test_a_failed_write_is_reported_not_raised() -> None:
     """Storage errors used to escape into the scheduler thread and out of
     POST /api/refresh as a 500. A tick reports the failure and returns."""
-    from spotfloor.ingest.pipeline import run_tick
+    from ec2_spot_prices.ingest.pipeline import run_tick
 
     class BrokenStore(CountingStore):
         def write(self, offerings, *, now):

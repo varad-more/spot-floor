@@ -1,4 +1,4 @@
-# spotfloor — AWS region-wise spot instance tracker
+# EC2 Spot Prices — AWS region-wise spot instance tracker
 
 Scope agreed 2026-07-29: **pivot from cross-cloud GPU tracker to AWS-only,
 region-wise, all-instance-families spot price comparator.** Region rows with the

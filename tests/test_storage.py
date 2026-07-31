@@ -11,9 +11,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingFilter, TimeRange
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingFilter, TimeRange
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
 
 T0 = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)
 
@@ -171,7 +171,7 @@ def test_second_writer_in_the_same_second_does_not_lose_the_batch(store, tmp_pat
 
 def test_backfilled_segment_start_does_not_break_the_next_poll(store) -> None:
     """`serve.py --backfill` seeds segments, then the poller ticks immediately."""
-    from spotfloor.storage.base import OfferingRecord
+    from ec2_spot_prices.storage.base import OfferingRecord
 
     store.backfill([OfferingRecord(offering=offering(price=1.0), first_seen=T0, last_seen=T0)])
 

@@ -16,8 +16,8 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from spotfloor.alerts.evaluator import compute_metric, evaluate, step
-from spotfloor.alerts.rules import (
+from ec2_spot_prices.alerts.evaluator import compute_metric, evaluate, step
+from ec2_spot_prices.alerts.rules import (
     MISSING,
     AlertRule,
     EventKind,
@@ -25,8 +25,8 @@ from spotfloor.alerts.rules import (
     RuleState,
     RuleStatus,
 )
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingRecord
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingRecord
 
 THRESHOLD = 12.0
 NOW = datetime(2026, 7, 13, 12, 0, tzinfo=UTC)

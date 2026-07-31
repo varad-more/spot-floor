@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from spotfloor.gpu import bucket_vram_gb, canonical_gpu_model, is_canonical
+from ec2_spot_prices.gpu import bucket_vram_gb, canonical_gpu_model, is_canonical
 
 
 @pytest.mark.parametrize(

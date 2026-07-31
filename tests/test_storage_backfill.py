@@ -18,9 +18,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingFilter, OfferingRecord, TimeRange
-from spotfloor.storage.sqlite import SCHEMA_VERSION, SqliteTimeSeriesStore
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingFilter, OfferingRecord, TimeRange
+from ec2_spot_prices.storage.sqlite import SCHEMA_VERSION, SqliteTimeSeriesStore
 
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 
@@ -94,7 +94,7 @@ def test_backfill_is_idempotent(store) -> None:
 
 def test_repeated_backfill_does_not_inflate_the_price_change_count(store) -> None:
     """The volatility column reads segment count, so a duplicate is a phantom move."""
-    from spotfloor.query import volatility
+    from ec2_spot_prices.query import volatility
 
     segments = [
         segment(0.088, hours_ago=6, until_hours_ago=4),

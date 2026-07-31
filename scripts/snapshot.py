@@ -36,10 +36,10 @@ from pathlib import Path
 
 import httpx
 
-from spotfloor.ingest.pipeline import run_tick
-from spotfloor.storage.base import OfferingFilter
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import WebConfig, build_providers, create_app
+from ec2_spot_prices.ingest.pipeline import run_tick
+from ec2_spot_prices.storage.base import OfferingFilter
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.web.app import WebConfig, build_providers, create_app
 
 logger = logging.getLogger("snapshot")
 
@@ -97,7 +97,7 @@ def main() -> int:
         "--retain-days",
         type=int,
         default=0,
-        help="drop segments older than this; defaults to SPOTFLOOR_BACKFILL_DAYS",
+        help="drop segments older than this; defaults to EC2_SPOT_PRICES_BACKFILL_DAYS",
     )
     parser.add_argument(
         "--backfill",

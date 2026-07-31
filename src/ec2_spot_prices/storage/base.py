@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, Sequence
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
 
 
 @dataclass(frozen=True, slots=True)

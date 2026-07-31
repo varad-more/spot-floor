@@ -33,8 +33,8 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping, Sequence
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind, obtainability_rank
-from spotfloor.storage.base import OfferingRecord, TimeRange
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind, obtainability_rank
+from ec2_spot_prices.storage.base import OfferingRecord, TimeRange
 
 
 @dataclass(frozen=True, slots=True)

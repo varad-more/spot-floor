@@ -1,11 +1,11 @@
-# spotfloor
+# EC2 Spot Prices
 
 Compare AWS EC2 spot prices across every region, and see which availability zone
 each price actually came from.
 
 Prices vary inside a region more than most people expect. `g6.12xlarge` in
 `ca-central-1` ranges from $1.13 to $5.11/hr depending on the zone — a 4.5× spread
-in one region. spotfloor names the cheapest zone and shows what the regional
+in one region. EC2 Spot Prices names the cheapest zone and shows what the regional
 roll-up hid.
 
 Runs on your machine against your own AWS account. Every API call it makes is free.
@@ -128,7 +128,7 @@ computed against *the calling account's* quota and usage history — so a score
 fetched with your credentials describes your account, not whether capacity exists.
 Measured live, `p5.48xlarge` scored 1/10 in every zone for the author's account.
 
-So spotfloor doesn't call that API. It reports `unknown` instead of inventing a
+So EC2 Spot Prices doesn't call that API. It reports `unknown` instead of inventing a
 number. It compares prices; it does not claim to know what you can get.
 
 "Price moves" is not availability either. It counts real price changes from AWS's
@@ -170,13 +170,13 @@ All optional, all environment variables.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `SPOTFLOOR_DB` | `spotfloor.db` | SQLite path. Pure cache — safe to delete. |
-| `SPOTFLOOR_REGIONS` | *all enabled* | Comma-separated. Unset discovers your regions. |
-| `SPOTFLOOR_INSTANCE_TYPES` | *every type* | Comma-separated. Narrow it for a faster local run. |
-| `SPOTFLOOR_HISTORY_DAYS` | `7` | What the page charts. |
-| `SPOTFLOOR_BACKFILL_DAYS` | `30` | Backfill depth. AWS retains ~89 days. |
-| `SPOTFLOOR_POLL_INTERVAL_S` | `300` | Background poll interval. |
-| `SPOTFLOOR_PORT` | `8000` | |
+| `EC2_SPOT_PRICES_DB` | `ec2-spot-prices.db` | SQLite path. Pure cache — safe to delete. |
+| `EC2_SPOT_PRICES_REGIONS` | *all enabled* | Comma-separated. Unset discovers your regions. |
+| `EC2_SPOT_PRICES_INSTANCE_TYPES` | *every type* | Comma-separated. Narrow it for a faster local run. |
+| `EC2_SPOT_PRICES_HISTORY_DAYS` | `7` | What the page charts. |
+| `EC2_SPOT_PRICES_BACKFILL_DAYS` | `30` | Backfill depth. AWS retains ~89 days. |
+| `EC2_SPOT_PRICES_POLL_INTERVAL_S` | `300` | Background poll interval. |
+| `EC2_SPOT_PRICES_PORT` | `8000` | |
 
 ## Commands
 
@@ -198,12 +198,12 @@ uv run pytest                  # + live correctness gates
 | `UnauthorizedOperation` | Key is valid but the IAM policy is missing — attach [`docs/iam-policy.json`](docs/iam-policy.json). |
 | A region is missing | It'll be named in a note on the page. Opt-in regions you haven't enabled raise `AuthFailure`. |
 | Charts are single dots | Started without `--backfill`. Run `scripts/scan.py --backfill`. |
-| `address already in use` | `SPOTFLOOR_PORT=8787` |
+| `address already in use` | `EC2_SPOT_PRICES_PORT=8787` |
 
 ## Layout
 
 ```
-src/spotfloor/
+src/ec2_spot_prices/
   models.py         InstanceOffering — region/zone split, optional GPU fields
   query.py          read model: region_table(), volatility() — pure functions
   providers/aws.py  region fan-out, history-as-segments, availability = unknown

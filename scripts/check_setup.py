@@ -99,7 +99,7 @@ CREDS_HINT = """
 
 
 def main() -> int:
-    print("spotfloor preflight\n")
+    print("ec2_spot_prices preflight\n")
     failed = False
 
     # --- Python -------------------------------------------------------------
@@ -180,7 +180,7 @@ def main() -> int:
 
     # --- a real price, end to end -------------------------------------------
     print()
-    from spotfloor.providers.aws import AwsProvider, enabled_regions
+    from ec2_spot_prices.providers.aws import AwsProvider, enabled_regions
 
     regions = enabled_regions(ec2)
     print(f"{OK} {len(regions)} regions enabled on this account")

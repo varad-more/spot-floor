@@ -17,8 +17,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Sequence
 
-from spotfloor.providers.base import Provider
-from spotfloor.storage.base import TimeSeriesStore, WriteResult
+from ec2_spot_prices.providers.base import Provider
+from ec2_spot_prices.storage.base import TimeSeriesStore, WriteResult
 
 logger = logging.getLogger(__name__)
 

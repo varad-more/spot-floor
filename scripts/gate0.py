@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import textwrap
 
-from spotfloor.providers.vast import RELIABILITY_FLOOR, VastProvider, derive_availability
+from ec2_spot_prices.providers.vast import RELIABILITY_FLOOR, VastProvider, derive_availability
 
 
 def main() -> None:

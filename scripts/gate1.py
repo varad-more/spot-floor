@@ -21,12 +21,12 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from spotfloor.ingest.pipeline import run_tick
-from spotfloor.models import Availability
-from spotfloor.providers.aws import AwsProvider, CredsOwner
-from spotfloor.query import region_table
-from spotfloor.storage.base import OfferingFilter, TimeRange
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.ingest.pipeline import run_tick
+from ec2_spot_prices.models import Availability
+from ec2_spot_prices.providers.aws import AwsProvider, CredsOwner
+from ec2_spot_prices.query import region_table
+from ec2_spot_prices.storage.base import OfferingFilter, TimeRange
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
 
 CYCLES = 3
 REGIONS = ("us-east-1", "us-west-2", "eu-west-1")

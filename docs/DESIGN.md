@@ -1,4 +1,4 @@
-# spotfloor — design notes
+# EC2 Spot Prices — design notes
 
 Why the thing is built the way it is. The [README](../README.md) covers how to run it; this is the reasoning, and the measurements behind it.
 
@@ -39,7 +39,7 @@ and usage history. Measured live from this repo's account, `p5.48xlarge` scored
 fetched with the app's credentials is **about the wrong account entirely**, and
 publishing it as a market signal would be fabrication.
 
-spotfloor therefore reports `unknown` and **does not call that API at all** under
+EC2 Spot Prices therefore reports `unknown` and **does not call that API at all** under
 app credentials. Enforced by a test
 (`test_app_creds_never_call_the_placement_score_api`), not by a comment. The only
 honest path to a real AWS availability signal is to compute it with *your own*
@@ -201,8 +201,8 @@ confirmations. Between them is a dead zone where nothing is emitted.
 On a 207-tick series straddling the threshold 200 times:
 
 ```
-spotfloor (hysteresis):   2 alerts
-naive threshold check : 112 alerts
+hysteresis (this engine) :   2 alerts
+naive threshold check    : 112 alerts
 ```
 
 `step()` is pure — no I/O, no clock, no database — which is what makes the gate
@@ -217,7 +217,7 @@ architectural, so it is also a test (`test_no_llm_in_the_critical_path`).
 ## Layout
 
 ```
-src/spotfloor/
+src/ec2_spot_prices/
   models.py            InstanceOffering, PriceKind, Availability, series identity
   gpu.py               GPU SKU vocabulary (enrichment for the GPU rows)
   query.py             read model: region_table(), volatility(), floor_series() -- pure

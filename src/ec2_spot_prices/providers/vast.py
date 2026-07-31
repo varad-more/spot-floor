@@ -20,7 +20,7 @@ whose membership depends on ``order``. Measured live on RTX 4090: ordering by
 $0.1067 (an 11% overstatement), because 15 machines with cheaper bids were simply
 absent from the price-sorted slice. Both slices were under the result cap, so this
 is not truncation -- a single sort order *cannot* see the spot floor. We therefore
-query once per sort key and union by ``machine_id``. In a product named spotfloor,
+query once per sort key and union by ``machine_id``. In a product named ec2_spot_prices,
 this is the one bias that cannot ship.
 
 Offerings are emitted **per machine**, not pre-aggregated to a floor. The floor is
@@ -39,8 +39,8 @@ from typing import Any
 
 import httpx
 
-from spotfloor.gpu import canonical_gpu_model
-from spotfloor.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.gpu import canonical_gpu_model
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
 
 logger = logging.getLogger(__name__)
 

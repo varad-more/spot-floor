@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 
-<title>spotfloor — find the cheapest region for any GPU or EC2 instance</title>
+<title>EC2 Spot Prices — find the cheapest region for any GPU or EC2 instance</title>
 <meta name="description" content="Compare AWS EC2 spot and on-demand prices for every
   instance type across every region — GPU boxes included. Every price names the
   availability zone it came from.">
@@ -453,7 +453,7 @@
 
   <header class="head">
     <div>
-      <h1>spotfloor</h1>
+      <h1>EC2 Spot Prices</h1>
       <p class="lede">
         You picked the GPU. <strong>This tells you where to rent it.</strong> Spot and
         on-demand prices for every EC2 instance type, compared across every region,
@@ -601,7 +601,7 @@
     <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
     is computed against <em>the calling account's</em> quota and history — so a score
     fetched with this app's credentials describes that account, not your odds of getting
-    capacity. spotfloor does not call that API and reports <code>unknown</code> rather
+    capacity. EC2 Spot Prices does not call that API and reports <code>unknown</code> rather
     than inventing a number. <strong>This is a price comparator; it does not claim to
     know what you can get.</strong></p>
     <p><strong>“Price moves” is not availability either.</strong> It counts how many

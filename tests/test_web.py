@@ -22,9 +22,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from fastapi.testclient import TestClient
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import (
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.web.app import (
     NO_CREDENTIALS_NOTE,
     SPOT_FLOOR_RATIO,
     WebConfig,
@@ -211,7 +211,7 @@ def priced_client(priced):
 def test_the_page_renders(client) -> None:
     response = client.get("/")
     assert response.status_code == 200
-    assert "spotfloor" in response.text
+    assert "EC2 Spot Prices" in response.text  # the wordmark, not the module name
     assert "m5.large" in response.text
 
 
@@ -429,7 +429,7 @@ def test_unobserved_buckets_are_null_in_the_chart_payload(client) -> None:
 
 def test_the_rle_round_trip_preserves_gaps_and_values() -> None:
     """The encoding is only safe if it is exactly reversible, gaps included."""
-    from spotfloor.web.app import _rle
+    from ec2_spot_prices.web.app import _rle
 
     original = [None, 0.5, 0.5, 0.5, None, None, 0.25, None]
     assert decode_rle(_rle(original)) == original
@@ -814,28 +814,28 @@ def test_the_page_loads_nothing_from_a_third_party(snapshot_client) -> None:
 # booted, served /healthz, and 500'd on the first real page.
 
 
-SPOTFLOOR_ENV_VARS = (
-    "SPOTFLOOR_DB",
-    "SPOTFLOOR_REGIONS",
-    "SPOTFLOOR_INSTANCE_TYPES",
-    "SPOTFLOOR_POLL_INTERVAL_S",
-    "SPOTFLOOR_HISTORY_DAYS",
-    "SPOTFLOOR_BACKFILL_DAYS",
-    "SPOTFLOOR_BUCKETS",
+EC2_SPOT_PRICES_ENV_VARS = (
+    "EC2_SPOT_PRICES_DB",
+    "EC2_SPOT_PRICES_REGIONS",
+    "EC2_SPOT_PRICES_INSTANCE_TYPES",
+    "EC2_SPOT_PRICES_POLL_INTERVAL_S",
+    "EC2_SPOT_PRICES_HISTORY_DAYS",
+    "EC2_SPOT_PRICES_BACKFILL_DAYS",
+    "EC2_SPOT_PRICES_BUCKETS",
 )
 
 
 @pytest.fixture
 def clean_env(monkeypatch):
-    """Clear every SPOTFLOOR_* variable so these tests read one environment.
+    """Clear every EC2_SPOT_PRICES_* variable so these tests read one environment.
 
     Without this they inherit the developer's shell or the CI job's env and pass
     or fail on where they run. That is not hypothetical: the Pages workflow sets
-    SPOTFLOOR_BUCKETS job-wide, and the override test below -- which asserts an
+    EC2_SPOT_PRICES_BUCKETS job-wide, and the override test below -- which asserts an
     untouched variable falls through to its default -- went green locally and red
     in CI on exactly that.
     """
-    for name in SPOTFLOOR_ENV_VARS:
+    for name in EC2_SPOT_PRICES_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
     return monkeypatch
 
@@ -853,9 +853,9 @@ def test_defaults_are_usable_values_not_descriptors(clean_env) -> None:
 
 
 def test_environment_overrides_are_parsed(clean_env) -> None:
-    clean_env.setenv("SPOTFLOOR_DB", "/tmp/x.db")
-    clean_env.setenv("SPOTFLOOR_REGIONS", "us-east-1, us-west-2 ,")
-    clean_env.setenv("SPOTFLOOR_HISTORY_DAYS", "14")
+    clean_env.setenv("EC2_SPOT_PRICES_DB", "/tmp/x.db")
+    clean_env.setenv("EC2_SPOT_PRICES_REGIONS", "us-east-1, us-west-2 ,")
+    clean_env.setenv("EC2_SPOT_PRICES_HISTORY_DAYS", "14")
 
     config = WebConfig.from_env()
 
@@ -1157,8 +1157,8 @@ def _entry(instance_type, region, spot, on_demand):
     assembled -- including a change to how `on_demand_usd_hr` gets attached, which
     is the exact input `floor_stats` measures.
     """
-    from spotfloor.query import region_table
-    from spotfloor.storage.base import OfferingRecord
+    from ec2_spot_prices.query import region_table
+    from ec2_spot_prices.storage.base import OfferingRecord
 
     now = datetime.now(UTC)
 
@@ -1180,14 +1180,14 @@ def _entry(instance_type, region, spot, on_demand):
     if on_demand is not None:
         records.append(record(on_demand, PriceKind.ON_DEMAND))
 
-    from spotfloor.web.app import TableEntry
+    from ec2_spot_prices.web.app import TableEntry
 
     row = next(r for r in region_table(records) if r.price_kind is PriceKind.SPOT)
     return TableEntry(row=row, series=[])
 
 
 def test_floor_stats_counts_rows_pinned_to_the_floor() -> None:
-    from spotfloor.web.app import floor_stats
+    from ec2_spot_prices.web.app import floor_stats
 
     stats = floor_stats([
         _entry("m5.large", "sa-east-1", 0.0612, 0.6120),    # exactly 10% -- the floor
@@ -1207,7 +1207,7 @@ def test_a_row_a_hair_off_the_floor_still_counts_as_on_it() -> None:
     """Prices are quantized to micro-dollars, so an exactly-floored row divides to
     a number a shade either side of 0.1. The tolerance exists for that and must not
     be wide enough to sweep in a row that is merely cheap."""
-    from spotfloor.web.app import floor_stats
+    from ec2_spot_prices.web.app import floor_stats
 
     stats = floor_stats([
         _entry("a.large", "us-east-1", 0.100_04, 1.0),   # 0.10004 -- quantization
@@ -1224,7 +1224,7 @@ def test_a_row_a_hair_off_the_floor_still_counts_as_on_it() -> None:
 def test_floor_stats_ignores_rows_with_no_on_demand_price() -> None:
     """A row with nothing to compare against is not a row at the floor, and it must
     not dilute the percentage either -- it is absent from the denominator."""
-    from spotfloor.web.app import floor_stats
+    from ec2_spot_prices.web.app import floor_stats
 
     stats = floor_stats([
         _entry("m5.large", "sa-east-1", 0.0612, 0.6120),
@@ -1237,7 +1237,7 @@ def test_floor_stats_ignores_rows_with_no_on_demand_price() -> None:
 
 def test_floor_regions_rank_by_share_not_by_raw_count() -> None:
     """A raw count would just rank regions by how many instance types they offer."""
-    from spotfloor.web.app import floor_stats
+    from ec2_spot_prices.web.app import floor_stats
 
     entries = [_entry(f"big{i}.large", "us-east-1", 0.5, 1.0) for i in range(20)]
     entries += [_entry(f"big{i}.large", "us-east-1", 0.1, 1.0) for i in range(3)]
@@ -1249,7 +1249,7 @@ def test_floor_regions_rank_by_share_not_by_raw_count() -> None:
 
 
 def test_the_page_explains_the_floor_it_is_named_after(priced_client) -> None:
-    """The tool is called spotfloor and never said what a spot floor was."""
+    """The tool is called ec2_spot_prices and never said what a spot floor was."""
     body = priced_client.get("/").text
     assert 'id="the-floor"' in body
     assert "tenth of its" in body, "the rule is not stated in words"

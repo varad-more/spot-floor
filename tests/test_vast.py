@@ -15,9 +15,9 @@ from statistics import median
 import httpx
 import pytest
 
-from spotfloor.gpu import is_canonical
-from spotfloor.models import Availability, PriceKind, obtainability_rank
-from spotfloor.providers.vast import VastProvider, derive_availability
+from ec2_spot_prices.gpu import is_canonical
+from ec2_spot_prices.models import Availability, PriceKind, obtainability_rank
+from ec2_spot_prices.providers.vast import VastProvider, derive_availability
 
 NOW = datetime.now(UTC)
 

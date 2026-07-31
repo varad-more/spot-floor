@@ -12,9 +12,9 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.query import floor_series, region_table, volatility
-from spotfloor.storage.base import OfferingRecord, TimeRange
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.query import floor_series, region_table, volatility
+from ec2_spot_prices.storage.base import OfferingRecord, TimeRange
 
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
 

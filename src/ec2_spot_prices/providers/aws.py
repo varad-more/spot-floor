@@ -61,9 +61,9 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import Any, Callable, Iterable, Sequence
 
-from spotfloor.gpu import canonical_gpu_model
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingRecord
+from ec2_spot_prices.gpu import canonical_gpu_model
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingRecord
 
 logger = logging.getLogger(__name__)
 
@@ -331,7 +331,7 @@ class AwsProvider:
         ``DescribeInstanceTypes`` is authoritative about GPU name, count and VRAM,
         so the GPU mapping is derived rather than hand-maintained. AWS omits the
         interconnect from the GPU name ("H100"), so the instance family supplies it
-        (``p5`` -> SXM); see :func:`spotfloor.gpu.canonical_gpu_model`.
+        (``p5`` -> SXM); see :func:`ec2_spot_prices.gpu.canonical_gpu_model`.
         """
         if self._catalog is not None:
             return self._catalog

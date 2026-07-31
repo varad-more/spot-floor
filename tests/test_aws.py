@@ -22,8 +22,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from spotfloor.models import Availability, PriceKind
-from spotfloor.providers.aws import AwsProvider, CredsOwner, enabled_regions
+from ec2_spot_prices.models import Availability, PriceKind
+from ec2_spot_prices.providers.aws import AwsProvider, CredsOwner, enabled_regions
 
 NOW = datetime.now(UTC)
 

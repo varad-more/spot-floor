@@ -12,7 +12,7 @@ invite rounding drift.
 zone* (``us-east-1a``), and zones within one region routinely differ in price. A
 region comparator therefore cannot key on a field that secretly holds an AZ, so
 ``region`` is the region and ``zone`` is the zone. Rolling up is a read-time
-decision (see :func:`spotfloor.query.region_table`), and the roll-up always names
+decision (see :func:`ec2_spot_prices.query.region_table`), and the roll-up always names
 the zone that produced the number.
 
 **Region is provider-native and NOT cross-comparable.** Vast reports
@@ -24,7 +24,7 @@ one. Filter regions within a provider, never across.
 (measured in us-east-1), so ``gpu_model``/``gpu_count`` describe a *property some
 instances have* rather than the schema's spine. The spine is ``instance_type``,
 which within a single provider is already canonical -- that is why cross-provider
-SKU normalization (:mod:`spotfloor.gpu`) is enrichment here rather than the
+SKU normalization (:mod:`ec2_spot_prices.gpu`) is enrichment here rather than the
 grouping key it had to be when comparing Vast against AWS.
 """
 

@@ -14,7 +14,7 @@ venv/
 *.db
 *.db-wal
 *.db-shm
-spotfloor.db
+ec2-spot-prices.db
 
 # Secrets & credentials — never commit; AWS creds live in ~/.aws, keep it that way
 .env

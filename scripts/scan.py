@@ -27,11 +27,11 @@ import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
-from spotfloor.ingest.pipeline import run_tick
-from spotfloor.query import region_table
-from spotfloor.storage.base import OfferingFilter, TimeRange
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import WebConfig, build_providers
+from ec2_spot_prices.ingest.pipeline import run_tick
+from ec2_spot_prices.query import region_table
+from ec2_spot_prices.storage.base import OfferingFilter, TimeRange
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.web.app import WebConfig, build_providers
 
 logger = logging.getLogger("scan")
 

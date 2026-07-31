@@ -9,9 +9,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from spotfloor.models import Availability, InstanceOffering, PriceKind
-from spotfloor.storage.base import OfferingFilter, TimeRange
-from spotfloor.storage.sqlite import SqliteTimeSeriesStore
+from ec2_spot_prices.models import Availability, InstanceOffering, PriceKind
+from ec2_spot_prices.storage.base import OfferingFilter, TimeRange
+from ec2_spot_prices.storage.sqlite import SqliteTimeSeriesStore
 
 T0 = datetime(2026, 7, 1, 12, 0, tzinfo=UTC)
 

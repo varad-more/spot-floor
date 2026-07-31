@@ -514,6 +514,7 @@ def create_app(
     config: WebConfig | None = None,
     poll: bool = True,
     snapshot: bool = False,
+    snapshot_now: datetime | None = None,
     notes: Sequence[str] | None = None,
     provider_factory: Callable[[WebConfig], tuple[list[Provider], list[str]]] | None = None,
 ) -> FastAPI:
@@ -578,13 +579,30 @@ def create_app(
 
     app = FastAPI(title="ec2_spot_prices", lifespan=lifespan)
 
+    def clock() -> datetime:
+        """The instant every route renders as of.
+
+        Live, that is the wall clock. For a snapshot it is frozen, because the
+        snapshot is one point in time and rendering it takes long enough for the
+        difference to be a bug rather than a rounding error: the full catalogue
+        takes ~14 minutes, `latest()` drops segments older than a 15-minute
+        freshness TTL, and each route was reading its own clock. So `/` rendered
+        with data and `/api/market`, fetched minutes later, rendered *zero rows* --
+        a published, empty API next to a full page, with nothing failing.
+
+        Freezing it at the poll time also stops the page overstating its own
+        freshness. It used to stamp the moment the HTML was built, which is a
+        quarter of an hour after the prices were actually read.
+        """
+        return snapshot_now or datetime.now(UTC)
+
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
 
     @app.get("/api/market")
     def api_market(request: Request) -> JSONResponse:
-        now = datetime.now(UTC)
+        now = clock()
         entries = build_entries(request.app.state.store, config, now=now)
         return JSONResponse(
             {
@@ -603,7 +621,7 @@ def create_app(
         days: int = Query(default=0, ge=0, le=90),
         buckets: int = Query(default=0, ge=0, le=1000),
     ) -> JSONResponse:
-        now = datetime.now(UTC)
+        now = clock()
         days = days or config.history_days
         buckets = buckets or config.buckets
         window = TimeRange(now - timedelta(days=days), now)
@@ -768,7 +786,7 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> Any:
-        now = datetime.now(UTC)
+        now = clock()
         entries = build_entries(request.app.state.store, config, now=now)
         return _TEMPLATES.TemplateResponse(
             request=request,

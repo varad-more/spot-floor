@@ -191,19 +191,24 @@ def main() -> int:
         if removed:
             logger.info("pruned %d segments older than %dd", removed, retain_days)
 
-        # Asked with the wall clock, not with `now`, because that is the clock the
-        # *app* will use a moment from now when it renders. Anything already stale
-        # by this point renders as an empty table, and an empty table published over
-        # a good snapshot is the failure this whole block exists to prevent --
-        # `report.fetched` above cannot catch it, since a tick can fetch thousands
-        # of rows and still leave nothing current enough to draw.
-        records = store.latest(OfferingFilter(), now=datetime.now(UTC))
+        # Asked with `now` -- the instant the prices were read -- and handed to the
+        # app below as its frozen clock, so this check and every route agree on what
+        # "current" means.
+        #
+        # It used to ask with the wall clock, on the reasoning that the app would use
+        # the wall clock a moment later. The app does, but "a moment" is ~14 minutes
+        # at full catalogue scope, and `latest()` drops segments older than a
+        # 15-minute freshness TTL. So this check passed, `/` rendered with data, and
+        # `/api/market` -- fetched after the page was built -- crossed the TTL and
+        # rendered zero rows. A published, empty API sitting next to a full page,
+        # with every guard here reporting success.
+        records = store.latest(OfferingFilter(), now=now)
         instance_types = sorted({r.offering.instance_type for r in records})
         if not records:
             logger.error(
-                "nothing is current enough to render (%d types stored, but none within "
-                "the freshness window); refusing to publish an empty page",
-                len({r.offering.instance_type for r in store.latest(OfferingFilter(), now=now)}),
+                "nothing in the store is within the freshness window of %s; "
+                "refusing to publish an empty page",
+                now.isoformat(timespec="seconds"),
             )
             return 1
 
@@ -213,7 +218,12 @@ def main() -> int:
         # with no AWS rows and no explanation, which is precisely what that note
         # exists to prevent.
         app = create_app(
-            store=store, config=config, poll=False, snapshot=True, notes=notes
+            store=store,
+            config=config,
+            poll=False,
+            snapshot=True,
+            snapshot_now=now,
+            notes=notes,
         )
 
         written = asyncio.run(

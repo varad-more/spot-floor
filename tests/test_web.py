@@ -843,6 +843,40 @@ def test_the_structured_data_is_valid_json(snapshot_client) -> None:
     assert datetime.strptime(start, "%Y-%m-%d") <= datetime.strptime(end, "%Y-%m-%d")
 
 
+def test_a_snapshot_renders_every_route_from_one_instant(store) -> None:
+    """A slow render must not outlive the freshness window partway through.
+
+    This shipped: rendering the full catalogue takes ~14 minutes, ``latest()``
+    drops segments older than a 15-minute TTL, and every route read its own wall
+    clock. ``/`` was built while the data was current and ``/api/market``, fetched
+    once the page was written, crossed the TTL and returned zero rows -- so the
+    published API was empty next to a full page, and nothing failed.
+
+    Simulated by pinning the clock a full day after the prices were observed: with
+    a frozen clock both routes still agree, and without one both would be empty.
+    """
+    observed = datetime.now(UTC) - timedelta(days=1)
+    store.write([offering(observed_at=observed)], now=observed)
+
+    app = create_app(
+        store=store,
+        config=WebConfig(history_days=7),
+        poll=False,
+        snapshot=True,
+        snapshot_now=observed,
+        notes=[],
+    )
+    with TestClient(app) as c:
+        market = c.get("/api/market").json()
+        page = c.get("/").text
+
+    assert market["rows"], "the published API rendered empty while the page had data"
+    # And the two agree on when the prices were read, which is the thing a snapshot
+    # is claiming. They used to differ by however long the render took.
+    assert market["generated_at"] == observed.isoformat()
+    assert observed.strftime("%Y-%m-%d %H:%M") in page
+
+
 def test_the_social_card_urls_are_absolute(snapshot_client) -> None:
     """Scrapers do not resolve relative image paths; a bare `/og.png` renders blank."""
     body = snapshot_client.get("/").text

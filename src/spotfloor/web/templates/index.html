@@ -4,7 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 {% if not snapshot %}<meta http-equiv="refresh" content="300">{% endif %}
-<title>spotfloor — AWS spot prices by region</title>
+<title>spotfloor — find the cheapest region for any GPU or EC2 instance</title>
+<meta name="description" content="Compare AWS EC2 spot and on-demand prices for every
+  instance type across every region — GPU boxes included. Every price names the
+  availability zone it came from.">
+<meta name="color-scheme" content="light dark">
 <script>
   /* Applied before first paint: reading the stored choice later flashes the other
      theme for a frame. The dark rules already keyed off [data-theme]; nothing set it. */
@@ -125,6 +129,24 @@
   }
   .ms-menu div.hi { background: color-mix(in srgb, var(--accent) 26%, transparent); }
   .ms-menu .none { color: var(--muted); cursor: default; }
+  /* Group headers. Sticky, because the point of grouping 1,339 instance types is
+     knowing which family you are looking at after you have scrolled into it. */
+  .ms-menu .grp {
+    position: sticky; top: 0; z-index: 1; cursor: default;
+    padding: .3rem .6rem .22rem; background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    font-size: .68rem; font-weight: 700; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--muted);
+  }
+  .ms-menu .grp:hover { background: var(--panel); }
+  /* `.ms-menu div` makes this a flex row, so the family name and the accelerator sit
+     at opposite ends. `margin-left:auto` keeps them apart even when the row is
+     narrow enough that `space-between` has nothing to distribute. */
+  .ms-menu .grp small {
+    margin-left: auto; font-weight: 600; letter-spacing: 0; text-transform: none;
+  }
+  .ms-menu .grp.gpu small { color: var(--accent); }
+  .ms-menu div.opt { padding-left: 1.1rem; }
   .ms-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     color: var(--muted); font-weight: 600; margin-bottom: .2rem; display: block; }
 
@@ -295,6 +317,21 @@
     color: var(--muted); max-width: 68ch; }
   .primer li { margin-bottom: .18rem; }
   .primer strong { color: var(--ink); font-weight: 600; }
+  .sibling {
+    margin: .55rem 0 0; font-size: .82rem; color: var(--muted); max-width: 72ch;
+    padding-left: .6rem; border-left: 2px solid var(--line);
+  }
+  .sibling a { color: var(--accent); font-weight: 600; }
+  /* The truncation notice. Deliberately inside the table card and always visible
+     when it applies -- a "showing 300 of 15,078" that you have to scroll to find
+     is a table that looks complete and is not. */
+  .more {
+    display: flex; align-items: center; gap: .7rem; flex-wrap: wrap;
+    padding: .7rem .9rem; border-top: 1px solid var(--line);
+    font-size: .84rem; color: var(--muted); background: var(--bg);
+  }
+  .more[hidden] { display: none; }
+  .more strong { color: var(--ink); }
 
   /* A picker and a setup prompt are forms, not charts: cap them at reading width
      rather than inheriting the chart modal's 1600px. */
@@ -336,19 +373,27 @@
     <div>
       <h1>spotfloor</h1>
       <p class="lede">
-        AWS EC2 spot prices compared <em>across regions</em>, with {{ config.history_days }}-day
-        history. Every price names the availability zone it came from — you launch into
-        a zone, not into a region.
+        You picked the GPU. <strong>This tells you where to rent it.</strong> Spot and
+        on-demand prices for <em>every</em> EC2 instance type, compared
+        <em>across every region</em>, with {{ config.history_days }}-day history — and
+        every price names the availability zone it came from, because you launch into a
+        zone, not into a region.
       </p>
       <ol class="primer">
         <li><strong>One row = one instance type in one region</strong>, priced at its
           cheapest zone. <em>AZ spread</em> is how much that regional number hid.</li>
-        <li><strong>Compare the rows, not the columns.</strong> The same hardware in two
+        <li><strong>Compare the rows, not the columns.</strong> The same H100 in two
           regions costs different amounts; that gap is the thing worth acting on.</li>
         <li><strong>Tick rows to chart them</strong>, <strong>⇄</strong> to plot one type
           across every region{% if not snapshot %}, <strong>Scan…</strong> to fetch fresh
           prices for a scope you choose{% endif %}.</li>
       </ol>
+      <p class="sibling">
+        Still deciding <em>which</em> instance you need? →
+        <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a>
+        weighs vCPU, memory, GPU and network against your priorities. This page picks up
+        where that one leaves off.
+      </p>
       <p class="claim">
         <span class="pill">availability: unknown</span>
         AWS publishes no availability, so no row here claims any. This compares
@@ -357,8 +402,9 @@
       </p>
       <p class="meta">
         Data fetched <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> ·
-        {{ entries | length }} rows · {{ regions_seen | length }} regions ·
-        {{ types_seen | length }} instance types ·
+        {{ '{:,}'.format(row_count) }} rows · {{ region_count }} regions ·
+        {{ '{:,}'.format(type_count) }} instance types
+        ({{ gpu_type_count }} with GPUs) ·
         {% if snapshot %}static snapshot{% else %}live, refreshes every 5&nbsp;min{% endif %}
       </p>
     </div>
@@ -464,91 +510,19 @@
             class="q" title="Cheapest-zone price over the window. A break in the line is a bucket with no observation, never a zero.">?</span></span></th>
         </tr>
       </thead>
-      <tbody>
-      {% for e in entries %}
-        <tr data-key="{{ e.row.instance_type }}|{{ e.row.region }}"
-            data-type="{{ e.row.instance_type }}"
-            data-family="{{ e.row.instance_family }}"
-            data-region="{{ e.row.region }}"
-            data-gpu="{{ 1 if e.row.gpu_count else 0 }}"
-            data-price="{{ e.row.cheapest_usd_hr }}"
-            data-spread="{{ '%.4f' % e.row.spread_pct }}"
-            {# Blank, not a sentinel number, when a value was not observed. `savings`
-               can legitimately be negative -- spot above list price during contention
-               -- so a negative sentinel would sort real data in with the blanks. #}
-            data-ondemand="{{ e.row.on_demand_usd_hr if e.row.on_demand_usd_hr is not none else '' }}"
-            data-saves="{{ '%.4f' % e.row.savings_pct if e.row.savings_pct is not none else '' }}"
-            data-pergpu="{{ e.row.cheapest_per_gpu_hr if e.row.cheapest_per_gpu_hr is not none else '' }}"
-            data-moves="{{ e.row.price_changes if e.row.price_changes is not none else '' }}">
-          <td class="colsel"><input type="checkbox" class="plotbox"
-              aria-label="Plot {{ e.row.instance_type }} in {{ e.row.region }}"></td>
-          <td class="type">{{ e.row.instance_type }}<span class="rowacts"
-              ><button type="button" class="cmp"
-                title="Plot {{ e.row.instance_type }} across all regions">⇄</button
-              >{% if not snapshot %}<button type="button" class="rescan"
-                title="Query AWS for just {{ e.row.instance_type }} in {{ e.row.region }} — 1 region, seconds, and nothing else touched">⟳</button>{% endif %}</span></td>
-          <td>{{ e.row.region }}</td>
-          <td class="num price">${{ '%.4f' % e.row.cheapest_usd_hr }}</td>
-          <td class="dim">{{ e.row.cheapest_zone }}
-            <span class="dim">({{ e.row.zone_count }}&nbsp;AZ{{ '' if e.row.zone_count == 1 else 's' }})</span>
-          </td>
-          <td class="num">
-            {% if e.row.on_demand_usd_hr is none %}
-              <span class="dim" title="Not observed — either the IAM policy has no pricing:GetProducts, or AWS quotes this region in a currency other than USD. It is not $0.">—</span>
-            {% else %}
-              ${{ '%.4f' % e.row.on_demand_usd_hr }}
-            {% endif %}
-          </td>
-          <td class="num">
-            {% if e.row.savings_pct is none %}
-              <span class="dim" title="No on-demand price observed to compare against. This is not '0% saved'.">—</span>
-            {% elif e.row.savings_pct < 0 %}
-              <span class="spread-hi" title="Spot is currently ABOVE the on-demand list price in this region — a real market state under contention, not a data error.">{{ '%.0f' % e.row.savings_pct }}%</span>
-            {% else %}
-              <span class="{% if e.row.savings_pct >= 70 %}saves-hi{% endif %}"
-                    title="${{ '%.4f' % e.row.cheapest_usd_hr }} in {{ e.row.cheapest_zone }} vs ${{ '%.4f' % e.row.on_demand_usd_hr }} on-demand">{{ '%.0f' % e.row.savings_pct }}%</span>
-            {% endif %}
-          </td>
-          <td class="num">
-            {% if e.row.zone_count < 2 %}
-              <span class="dim" title="Only one zone observed; nothing to compare.">—</span>
-            {% else %}
-              <span class="{% if e.row.spread_pct >= 25 %}spread-hi{% elif e.row.spread_pct >= 8 %}spread-mid{% endif %}"
-                    title="Dearest zone {{ e.row.dearest_zone }} at ${{ '%.4f' % e.row.dearest_usd_hr }}/hr">
-                +{{ '%.1f' % e.row.spread_pct }}%</span>
-            {% endif %}
-          </td>
-          <td class="dim">
-            {{ e.row.vcpus if e.row.vcpus else '?' }} vCPU
-            {%- if e.row.memory_gib %} · {{ '%g' % e.row.memory_gib }} GiB{% endif %}
-            {%- if e.row.gpu_count %} · {{ e.row.gpu_count }}× {{ e.row.gpu_model }}{% endif %}
-          </td>
-          <td class="num">
-            {% if e.row.cheapest_per_gpu_hr is not none %}
-              <span class="price">${{ '%.4f' % e.row.cheapest_per_gpu_hr }}</span>
-            {% else %}
-              <span class="dim" title="This instance type has no GPU.">—</span>
-            {% endif %}
-          </td>
-          <td class="num">
-            {% if e.row.price_changes is none %}
-              <span class="dim" title="No history in the window; not computed.">n/a</span>
-            {% else %}
-              {{ e.row.price_changes }}
-              {%- if e.row.coefficient_of_variation is not none %}
-                <span class="dim" title="Coefficient of variation over the window">
-                  ({{ '%.0f' % (e.row.coefficient_of_variation * 100) }}%)</span>
-              {% endif %}
-            {% endif %}
-          </td>
-          <td class="sparkcell" title="Click for the full chart">{{ e.spark | safe }}</td>
-        </tr>
-      {% endfor %}
-      </tbody>
+      <tbody id="rows"></tbody>
     </table>
     <div class="empty" id="norows" hidden>
       <p><strong>No rows match these filters.</strong></p>
       <p>Widen the selection, or press <em>Clear</em>.</p>
+    </div>
+    {# The table holds thousands of rows and the DOM holds the ones you can see.
+       This says which is which, out loud: a silently truncated table would be the
+       same lie as a silently dropped region. #}
+    <div class="more" id="more" hidden>
+      <span id="moretext"></span>
+      <button type="button" class="btn" id="morebtn">Show more</button>
+      <button type="button" class="btn" id="allbtn">Show all</button>
     </div>
   </div>
   {% else %}
@@ -657,15 +631,21 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       <li><strong>Gaps stay gaps.</strong> A bucket with no observation is a break in the
       line, never zero and never the previous price carried forward — <em>not
       observed</em> is a different claim from <em>unavailable</em>.</li>
-      <li><strong>Spot only</strong> (<code>Linux/UNIX</code>), per instance, per hour.
-      Watchlist is {{ config.instance_types | length }} types — bounded on purpose,
-      because us-east-1 alone lists 1,354.</li>
+      <li><strong>Spot and on-demand</strong> (<code>Linux/UNIX</code>, shared tenancy),
+      per instance, per hour.
+      {%- if config.instance_types %} Watchlist is
+      {{ config.instance_types | length }} named types.
+      {%- else %} Scope is <strong>every instance type EC2 offers</strong> —
+      {{ '{:,}'.format(type_count) }} of them priced here, discovered from the API rather
+      than from a list someone maintains by hand.{% endif %}</li>
       <li>JSON: {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>
       {%- else %}<code>/api/market</code>, <code>/api/history/{instance_type}</code>{% endif %}</li>
     </ul>
     <div class="by">
       <span>Built by <strong>Varad More</strong> ·
-        <a href="https://github.com/varad-more/spot-floor">github.com/varad-more/spot-floor</a></span>
+        <a href="https://github.com/varad-more/spot-floor">github.com/varad-more/spot-floor</a>
+        · sister tool:
+        <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a></span>
       <span>Data fetched {{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
     </div>
   </footer>
@@ -734,18 +714,91 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
 {% endif %}
 
 {% if entries %}
-<script id="chartdata" type="application/json">{{ chart_data | safe }}</script>
+<script id="tabledata" type="application/json">{{ table_data | safe }}</script>
 <script>
 (function () {
   "use strict";
 
-  var DATA = JSON.parse(document.getElementById('chartdata').textContent);
+  var DATA = JSON.parse(document.getElementById('tabledata').textContent);
   var MAX_SERIES = 8;   // the categorical palette has 8 validated slots, never cycled
   var SLOTS = ['--s1','--s2','--s3','--s4','--s5','--s6','--s7','--s8'];
 
+  // How many rows the DOM holds at once. The dataset is the whole EC2 catalogue --
+  // 15,078 rows at full scope -- and rendering all of it is a ~36 MB document and
+  // roughly a million nodes. Filtering and sorting still run over *every* row; this
+  // caps only what gets painted, and the bar under the table says so.
+  var PAGE = 300;
+  var shownLimit = PAGE;
+
+  // ------------------------------------------------------------------ the dataset
+  // Field names match the sort keys on the table headers (data-key), so the
+  // comparator can stay a lookup rather than a switch.
+  var SPECS = DATA.specs, REGION_NAMES = DATA.regions, ZONE_NAMES = DATA.zones;
+
+  function zoneAt(index) { return index < 0 ? null : ZONE_NAMES[index]; }
+
+  var ROWS = DATA.rows.map(function (r) {
+    var spec = SPECS[r[0]];
+    var region = REGION_NAMES[r[1]];
+    var price = r[2], dearest = r[6], onDemand = r[7], gpuCount = spec[5] || 0;
+    return {
+      key: spec[0] + '|' + region,
+      type: spec[0], family: spec[1], region: region,
+      vcpus: spec[2], memory: spec[3], gpuModel: spec[4], gpuCount: gpuCount,
+      gpu: gpuCount ? 1 : 0,
+      price: price,
+      zone: zoneAt(r[3]), zoneCount: r[4],
+      dearestZone: zoneAt(r[5]), dearestPrice: dearest,
+      // Derived here rather than shipped: sending a number the client can compute
+      // is sending the same fact twice, and two copies eventually disagree.
+      spread: price > 0 ? (dearest / price - 1) * 100 : 0,
+      ondemand: onDemand,
+      saves: (onDemand && onDemand > 0) ? (1 - price / onDemand) * 100 : null,
+      pergpu: gpuCount ? price / gpuCount : null,
+      moves: r[8], cv: r[9],
+      rle: r[10], kind: r[11]
+    };
+  });
+
+  // (type, region) -> price series, decoded from RLE on first use. Decoding all
+  // 15,078 up front would undo the point of encoding them.
+  var seriesCache = {};
+  function seriesFor(key) {
+    if (seriesCache[key] !== undefined) { return seriesCache[key]; }
+    var row = byKey[key];
+    var out = [];
+    if (row) {
+      row.rle.split(',').forEach(function (token) {
+        if (!token) { return; }          // only ever the whole-string empty case
+        var split = token.indexOf(':');
+        if (split === -1) { out.push(parseFloat(token)); return; }
+        // A leading colon is a gap. It keeps its count even at length one, so
+        // "not observed" can never decode as "no window".
+        var head = token.slice(0, split);
+        var value = head === '' ? null : parseFloat(head);
+        var n = parseInt(token.slice(split + 1), 10);
+        for (var i = 0; i < n; i++) { out.push(value); }
+      });
+    }
+    seriesCache[key] = out;
+    return out;
+  }
+
+  var byKey = {};
+  ROWS.forEach(function (row) { byKey[row.key] = row; });
+
+  // Which families carry which accelerator, for the grouped menu. Derived from the
+  // specs already on the page -- a hand-kept family->GPU table would be wrong from
+  // the next launch announcement onward, the same reason regions are discovered.
+  var familyGpu = {};
+  SPECS.forEach(function (spec) {
+    if (spec[5] && spec[4] && !familyGpu[spec[1]]) { familyGpu[spec[1]] = spec[4]; }
+  });
+
   var table = document.getElementById('grid');
   var tbody = table.tBodies[0];
-  var rows = Array.prototype.slice.call(tbody.rows);
+  var rows = ROWS;               // filtered/sorted in place; the DOM is a view of it
+  var view = ROWS.slice();       // what passes the current filters, in sort order
   var count = document.getElementById('count');
   var plot = document.getElementById('plot');
   var legendEl = document.getElementById('legend');
@@ -756,6 +809,10 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   var zoomPlot = document.getElementById('zoomplot');
   var zoomLegend = document.getElementById('zoomlegend');
   var zoomSub = document.getElementById('zoomsub');
+  var moreBar = document.getElementById('more');
+  var moreText = document.getElementById('moretext');
+  var moreBtn = document.getElementById('morebtn');
+  var allBtn = document.getElementById('allbtn');
 
   // One renderer, two destinations. The modal is a bigger viewport onto the same
   // chart, not a second implementation of it -- a duplicate would drift.
@@ -778,8 +835,49 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     return css(SLOTS[plotted.indexOf(key) % SLOTS.length]);
   }
 
+  // ------------------------------------------------------------------- grouping
+  // A flat list of 1,339 instance types is a scroll, not a menu. Both option lists
+  // are grouped instead: types by their family, regions by geography.
+
+  // Ordered so the accelerated families come first -- this page's whole framing is
+  // "which GPU, and where", and burying p5 under a alphabetical wall of c/m/r
+  // families would answer a different question first.
+  var GEO = [
+    ['us-', 'US'], ['ca-', 'Canada'], ['mx-', 'Mexico'], ['sa-', 'South America'],
+    ['eu-', 'Europe'], ['il-', 'Israel'], ['me-', 'Middle East'], ['af-', 'Africa'],
+    ['ap-', 'Asia Pacific'], ['cn-', 'China']
+  ];
+
+  function regionGroup(region) {
+    for (var i = 0; i < GEO.length; i++) {
+      if (region.indexOf(GEO[i][0]) === 0) { return GEO[i][1]; }
+    }
+    return 'Other';
+  }
+
+  // `canonical_gpu_model` emits storage slugs -- "A10G_24GB", and "UNMAPPED_<name>"
+  // for silicon whose interconnect it will not guess at. Both are honest and
+  // neither is a menu label, so they are formatted for reading here. The UNMAPPED_
+  // prefix is dropped rather than shown: it records that the *interconnect* is
+  // unknown, not the GPU, and the GPU is all this label claims.
+  function gpuLabel(model) {
+    return model.replace(/^UNMAPPED_/, '').replace(/_/g, ' ');
+  }
+
+  function typeGroup(type) {
+    var family = type.split('.')[0];
+    return familyGpu[family] ? family + ' • ' + gpuLabel(familyGpu[family]) : family;
+  }
+
+  // Accelerated families sort ahead of the rest; within each half, alphabetically.
+  // Returning a sort key rather than sorting here keeps the menu's own filtering
+  // (which reorders nothing) independent of the grouping.
+  function typeGroupRank(label) {
+    return (label.indexOf('•') !== -1 ? '0' : '1') + label;
+  }
+
   // ---------------------------------------------------------------- multi-select
-  function multiselect(id, options, selected, onChange) {
+  function multiselect(id, options, selected, onChange, grouping) {
     var root = document.getElementById(id);
     var input = root.querySelector('input');
     var box = root.querySelector('.ms-box');
@@ -810,8 +908,10 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
 
     var active = -1;   // keyboard cursor into the visible menu items
 
+    // Selectable rows only. Group headers are divs in the same menu, and including
+    // them here would let the keyboard cursor land on a label that cannot be chosen.
     function items() {
-      return Array.prototype.slice.call(menu.querySelectorAll('div:not(.none)'));
+      return Array.prototype.slice.call(menu.querySelectorAll('div.opt'));
     }
 
     function highlight(next) {
@@ -836,9 +936,60 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
         menu.appendChild(none);
         return;
       }
-      matches.slice(0, 60).forEach(function (value) {
+      // **Ordered by group before capping, not after.** Capping the raw alphabetical
+      // list first meant the 120 slots filled with a1/c1/c3… and no accelerated
+      // family ever reached the menu -- the GPU-first ordering was real and
+      // invisible. Rank first, then cut, so the cap trims the tail it is meant to.
+      var labelOf = {};
+      function labelFor(value) {
+        if (labelOf[value] === undefined) {
+          labelOf[value] = grouping ? grouping.label(value) : '';
+        }
+        return labelOf[value];
+      }
+
+      var ranked = matches;
+      if (grouping && grouping.rank) {
+        ranked = matches.slice().sort(function (a, b) {
+          var ra = grouping.rank(labelFor(a)), rb = grouping.rank(labelFor(b));
+          return ra === rb ? a.localeCompare(b) : ra.localeCompare(rb);
+        });
+      }
+
+      var shown = ranked.slice(0, 120);
+      var buckets = {}, order = [];
+      shown.forEach(function (value) {
+        var label = labelFor(value);
+        if (!buckets[label]) { buckets[label] = []; order.push(label); }
+        buckets[label].push(value);
+      });
+
+      order.forEach(function (label) {
+        if (grouping) {
+          var head = document.createElement('div');
+          head.className = 'grp' + (label.indexOf('•') !== -1 ? ' gpu' : '');
+          var parts = label.split(' • ');
+          head.textContent = parts[0];
+          if (parts[1]) {
+            var gpu = document.createElement('small');
+            gpu.textContent = parts[1];
+            head.appendChild(gpu);
+          }
+          menu.appendChild(head);
+        }
+        buckets[label].forEach(function (value) { menu.appendChild(option(value)); });
+      });
+
+      if (matches.length > shown.length) {
+        var note = document.createElement('div');
+        note.className = 'none';
+        note.textContent = (matches.length - shown.length) + ' more — keep typing to narrow';
+        menu.appendChild(note);
+      }
+
+      function option(value) {
         var item = document.createElement('div');
-        if (selected.has(value)) { item.className = 'on'; }
+        item.className = 'opt' + (selected.has(value) ? ' on' : '');
         var label = document.createElement('span');
         label.textContent = value;
         item.appendChild(label);
@@ -853,8 +1004,8 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
           input.value = '';
           renderChips(); renderMenu(); onChange();
         });
-        menu.appendChild(item);
-      });
+        return item;
+      }
     }
 
     input.dataset.ph = input.placeholder;
@@ -889,23 +1040,191 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     return { refresh: function () { renderChips(); renderMenu(); } };
   }
 
+  // ---------------------------------------------------------------- row rendering
+  function money(v) { return '$' + v.toFixed(4); }
+  function group(n) { return n.toLocaleString('en-US'); }
+
+  // Every string here comes from the AWS API (instance types, regions, zones) and
+  // is [a-z0-9.-], but this is the one place page text is built from data rather
+  // than typed, so it is escaped rather than trusted to stay that way.
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c];
+    });
+  }
+
+  // The same drawing rule as the server-side sparkline it replaces: a gap is drawn
+  // as a gap, and a lone observation between two gaps is a dot, because a polyline
+  // of one point renders nothing and sparse data would look like no data.
+  var SPARK_W = 168, SPARK_H = 34, SPARK_PAD = 3;
+  function sparkline(values) {
+    var observed = values.filter(function (v) { return v !== null; });
+    if (!observed.length) {
+      return '<svg class="spark spark-empty" viewBox="0 0 ' + SPARK_W + ' ' + SPARK_H
+        + '" width="' + SPARK_W + '" height="' + SPARK_H
+        + '" role="img" aria-label="no observations in this window"></svg>';
+    }
+    var lo = Math.min.apply(null, observed), hi = Math.max.apply(null, observed);
+    var span = hi - lo;
+    var innerW = SPARK_W - 2 * SPARK_PAD, innerH = SPARK_H - 2 * SPARK_PAD;
+    var step = innerW / Math.max(values.length - 1, 1);
+    function x(i) { return SPARK_PAD + i * step; }
+    function y(v) {
+      // A flat series has no range to normalise against; centre it rather than
+      // dividing by zero. SVG y grows downward, so a high price is a small y.
+      if (span === 0) { return SPARK_PAD + innerH / 2; }
+      return SPARK_PAD + innerH * (1 - (v - lo) / span);
+    }
+
+    var parts = [], run = [];
+    function flush() {
+      if (!run.length) { return; }
+      if (run.length === 1) {
+        parts.push('<circle cx="' + x(run[0][0]).toFixed(2) + '" cy="'
+          + y(run[0][1]).toFixed(2) + '" r="1.6" fill="currentColor"/>');
+      } else {
+        parts.push('<polyline points="' + run.map(function (p) {
+          return x(p[0]).toFixed(2) + ',' + y(p[1]).toFixed(2);
+        }).join(' ') + '" fill="none" stroke="currentColor" stroke-width="1.5"'
+          + ' stroke-linejoin="round" stroke-linecap="round"/>');
+      }
+      run = [];
+    }
+    values.forEach(function (v, i) {
+      if (v === null) { flush(); } else { run.push([i, v]); }
+    });
+    flush();
+
+    return '<svg class="spark" viewBox="0 0 ' + SPARK_W + ' ' + SPARK_H + '" width="'
+      + SPARK_W + '" height="' + SPARK_H + '" preserveAspectRatio="none" role="img"'
+      + ' aria-label="price range ' + money(lo) + ' to ' + money(hi)
+      + ' per instance hour over ' + values.length + ' buckets, '
+      + observed.length + ' observed">' + parts.join('') + '</svg>';
+  }
+
+  function rowHtml(row) {
+    var plotted_ = plotted.indexOf(row.key) !== -1;
+    var cells = [];
+
+    cells.push('<td class="colsel"><input type="checkbox" class="plotbox"'
+      + (plotted_ ? ' checked' : '')
+      + (!plotted_ && plotted.length >= MAX_SERIES ? ' disabled' : '')
+      + ' aria-label="Plot ' + esc(row.type) + ' in ' + esc(row.region) + '"></td>');
+
+    // The rescan control is omitted by the *template*, not by a runtime branch, so a
+    // static export ships none of its markup at all. A snapshot has no server, and
+    // a control that silently does nothing is worse than no control -- shipping it
+    // disabled-by-flag would leave that promise one typo away from breaking.
+    cells.push('<td class="type">' + esc(row.type) + '<span class="rowacts">'
+      + '<button type="button" class="cmp" title="Plot ' + esc(row.type)
+      + ' across all regions">⇄</button>'
+      {%- if not snapshot %}
+      + '<button type="button" class="rescan" title="Query AWS for just '
+        + esc(row.type) + ' in ' + esc(row.region)
+        + ' — 1 region, seconds, and nothing else touched">⟳</button>'
+      {%- endif %}
+      + '</span></td>');
+
+    cells.push('<td>' + esc(row.region) + '</td>');
+    cells.push('<td class="num price">' + money(row.price) + '</td>');
+
+    cells.push('<td class="dim">' + (row.zone === null
+      ? '<span class="dim" title="On-demand is priced per region, not per zone.">'
+        + esc(row.region) + ' (region)</span>'
+      : esc(row.zone) + ' <span class="dim">(' + row.zoneCount + '&nbsp;AZ'
+        + (row.zoneCount === 1 ? '' : 's') + ')</span>') + '</td>');
+
+    cells.push('<td class="num">' + (row.ondemand === null
+      ? '<span class="dim" title="Not observed — either the IAM policy has no'
+        + ' pricing:GetProducts, or AWS quotes this region in a currency other than'
+        + ' USD. It is not $0.">—</span>'
+      : money(row.ondemand)) + '</td>');
+
+    var saves = row.saves;
+    cells.push('<td class="num">' + (saves === null
+      ? '<span class="dim" title="No on-demand price observed to compare against.'
+        + ' This is not ‘0% saved’.">—</span>'
+      : saves < 0
+        ? '<span class="spread-hi" title="Spot is currently ABOVE the on-demand list'
+          + ' price in this region — a real market state under contention, not a'
+          + ' data error.">' + saves.toFixed(0) + '%</span>'
+        : '<span class="' + (saves >= 70 ? 'saves-hi' : '') + '" title="'
+          + money(row.price) + ' in ' + esc(row.zone || row.region) + ' vs '
+          + money(row.ondemand) + ' on-demand">' + saves.toFixed(0) + '%</span>')
+      + '</td>');
+
+    cells.push('<td class="num">' + (row.zoneCount < 2
+      ? '<span class="dim" title="Only one zone observed; nothing to compare.">—</span>'
+      : '<span class="' + (row.spread >= 25 ? 'spread-hi' : row.spread >= 8 ? 'spread-mid' : '')
+        + '" title="Dearest zone ' + esc(row.dearestZone) + ' at '
+        + money(row.dearestPrice) + '/hr">+' + row.spread.toFixed(1) + '%</span>')
+      + '</td>');
+
+    var spec = (row.vcpus || '?') + ' vCPU';
+    if (row.memory) { spec += ' · ' + row.memory + ' GiB'; }
+    if (row.gpuCount) { spec += ' · ' + row.gpuCount + '× ' + row.gpuModel; }
+    cells.push('<td class="dim">' + esc(spec) + '</td>');
+
+    cells.push('<td class="num">' + (row.pergpu === null
+      ? '<span class="dim" title="This instance type has no GPU.">—</span>'
+      : '<span class="price">' + money(row.pergpu) + '</span>') + '</td>');
+
+    cells.push('<td class="num">' + (row.moves === null
+      ? '<span class="dim" title="No history in the window; not computed.">n/a</span>'
+      : row.moves + (row.cv === null ? ''
+        : ' <span class="dim" title="Coefficient of variation over the window">('
+          + (row.cv * 100).toFixed(0) + '%)</span>')) + '</td>');
+
+    cells.push('<td class="sparkcell" title="Click for the full chart">'
+      + sparkline(seriesFor(row.key)) + '</td>');
+
+    return '<tr data-key="' + esc(row.key) + '"' + (plotted_ ? ' class="plotted"' : '')
+      + '>' + cells.join('') + '</tr>';
+  }
+
+  // One innerHTML write per render. Building 300 rows node-by-node is ~4,000 DOM
+  // calls on every keystroke in the filter box; one parse is measurably faster and
+  // is why the cap can be this generous.
+  function renderRows() {
+    var slice = view.slice(0, shownLimit);
+    tbody.innerHTML = slice.map(rowHtml).join('');
+
+    norows.hidden = view.length > 0;
+    var hiddenCount = view.length - slice.length;
+    moreBar.hidden = hiddenCount <= 0;
+    if (hiddenCount > 0) {
+      moreText.innerHTML = 'Showing <strong>' + group(slice.length) + '</strong> of '
+        + group(view.length) + ' matching rows. Sorting and filtering still cover '
+        + 'all ' + group(view.length) + '.';
+      moreBtn.textContent = 'Show ' + group(Math.min(PAGE, hiddenCount)) + ' more';
+      allBtn.hidden = hiddenCount <= PAGE;
+      allBtn.textContent = 'Show all ' + group(view.length);
+    }
+    syncBoxes();
+  }
+
+  moreBtn.addEventListener('click', function () {
+    shownLimit += PAGE;
+    renderRows();
+  });
+  allBtn.addEventListener('click', function () {
+    shownLimit = view.length;
+    renderRows();
+  });
+
   // ---------------------------------------------------------------- filtering
   function applyFilters() {
-    var shown = 0;
-    rows.forEach(function (row) {
-      var d = row.dataset;
-      var ok = (!selectedTypes.size || selectedTypes.has(d.type))
-            && (!selectedRegions.size || selectedRegions.has(d.region))
-            && (!gpuonly.checked || d.gpu === '1');
-      row.classList.toggle('hidden', !ok);
-      if (ok) { shown++; }
+    view = rows.filter(function (row) {
+      return (!selectedTypes.size || selectedTypes.has(row.type))
+          && (!selectedRegions.size || selectedRegions.has(row.region))
+          && (!gpuonly.checked || row.gpu === 1);
     });
-    count.textContent = shown === rows.length
-      ? rows.length + ' rows'
-      : shown + ' of ' + rows.length + ' rows';
-    // Filtering to nothing used to leave a header over blank space, which reads as
-    // a broken page rather than an over-narrow filter.
-    norows.hidden = shown > 0;
+    // A narrowed filter that still showed page 7 of the old result would look empty.
+    shownLimit = PAGE;
+    count.textContent = view.length === rows.length
+      ? group(rows.length) + ' rows'
+      : group(view.length) + ' of ' + group(rows.length) + ' rows';
+    renderRows();
     // The scan button labels itself from the visible rows, and it only exists off
     // the snapshot -- so this announces rather than calls, the same way the theme
     // toggle tells the chart to redraw.
@@ -989,7 +1308,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
 
     var lo = Infinity, hi = -Infinity;
     active.forEach(function (key) {
-      (DATA.series[key] || []).forEach(function (v) {
+      (seriesFor(key)).forEach(function (v) {
         if (v === null) { return; }
         if (v < lo) { lo = v; }
         if (v > hi) { hi = v; }
@@ -1029,7 +1348,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     // One polyline per contiguous run. A gap is a break, never bridged --
     // interpolating would assert an observation we never made.
     active.forEach(function (key) {
-      var values = DATA.series[key] || [];
+      var values = seriesFor(key);
       var color = colorFor(key);
       var run = [];
       var flush = function () {
@@ -1072,7 +1391,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     var into = legendHost();
     if (!plotted.length) { return; }
     plotted.forEach(function (key) {
-      var values = DATA.series[key] || [];
+      var values = seriesFor(key);
       var last = null;
       for (var i = values.length - 1; i >= 0; i--) {
         if (values[i] !== null) { last = values[i]; break; }
@@ -1122,7 +1441,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       i = Math.max(0, Math.min(geom.n - 1, i));
 
       var hits = geom.active.map(function (key) {
-        return { key: key, v: (DATA.series[key] || [])[i] };
+        return { key: key, v: (seriesFor(key))[i] };
       }).filter(function (h) { return h.v !== null && h.v !== undefined; });
 
       if (!hits.length) { leave(); return; }
@@ -1158,11 +1477,14 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
 
   // ---------------------------------------------------------------- plot selection
   function syncBoxes() {
-    rows.forEach(function (row) {
-      var box = row.querySelector('.plotbox');
-      var on = plotted.indexOf(row.dataset.key) !== -1;
+    // Only over what is rendered. `plotted` holds keys, not elements, so a series
+    // stays plotted while its row is filtered away or past the render cap -- which
+    // is what makes "compare across regions" survive a narrowing filter.
+    Array.prototype.forEach.call(tbody.rows, function (tr) {
+      var box = tr.querySelector('.plotbox');
+      var on = plotted.indexOf(tr.dataset.key) !== -1;
       box.checked = on;
-      row.classList.toggle('plotted', on);
+      tr.classList.toggle('plotted', on);
       // Past the palette's 8 validated slots a 9th hue would have to be invented,
       // so the control is disabled rather than the colour cycled.
       box.disabled = !on && plotted.length >= MAX_SERIES;
@@ -1188,40 +1510,59 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     syncBoxes(); drawChart();
   }
 
-  rows.forEach(function (row) {
-    row.querySelector('.plotbox').addEventListener('change', function (event) {
-      togglePlot(row.dataset.key, event.target.checked);
-    });
-    // A 13px checkbox is a poor hit target for the primary action of the table, so
-    // the row itself is the button. Real controls inside it keep their own click,
-    // and an in-progress text selection is not treated as one.
-    row.addEventListener('click', function (event) {
-      if (event.target.closest('input, button, a')) { return; }
-      if (String(window.getSelection ? window.getSelection() : '')) { return; }
-      togglePlot(row.dataset.key, plotted.indexOf(row.dataset.key) === -1);
-    });
-    row.querySelector('.cmp').addEventListener('click', function () {
-      compareAcrossRegions(row.dataset.type);
-      if (!zoom.open) {
-        plot.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
-    });
-    row.querySelector('.sparkcell').addEventListener('click', function (event) {
+  // Delegated, not bound per row. Rows are replaced wholesale on every filter,
+  // sort and "show more", so a listener attached to an element would be attached to
+  // a corpse -- and re-binding 300 of them per keystroke is the cost this rewrite
+  // exists to avoid. One listener on the tbody outlives every re-render.
+  tbody.addEventListener('change', function (event) {
+    var box = event.target.closest('.plotbox');
+    if (!box) { return; }
+    togglePlot(box.closest('tr').dataset.key, box.checked);
+  });
+
+  tbody.addEventListener('click', function (event) {
+    var tr = event.target.closest('tr');
+    if (!tr) { return; }
+    var key = tr.dataset.key;
+
+    if (event.target.closest('.cmp')) {
+      compareAcrossRegions(byKey[key].type);
+      if (!zoom.open) { plot.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+      return;
+    }
+    if (event.target.closest('.sparkcell')) {
       // The sparkline is a 168px thumbnail. Clicking it asks to see it properly,
       // not to toggle the row, so the row handler does not also fire.
       event.stopPropagation();
-      openZoom(row);
-    });
+      openZoom(key);
+      return;
+    }
+    {%- if not snapshot %}
+    if (event.target.closest('.rescan')) {
+      event.stopPropagation();   // the row click plots; this one refetches
+      var row = byKey[key];
+      runScan([row.type], [row.region], event.target.closest('.rescan'), '…');
+      return;
+    }
+    {%- endif %}
+    // A 13px checkbox is a poor hit target for the primary action of the table, so
+    // the row itself is the button. Real controls inside it keep their own click,
+    // and an in-progress text selection is not treated as one.
+    if (event.target.closest('input, button, a')) { return; }
+    if (String(window.getSelection ? window.getSelection() : '')) { return; }
+    togglePlot(key, plotted.indexOf(key) === -1);
   });
 
   // "Compare this instance across regions" -- the question the tool exists for.
   function compareAcrossRegions(type) {
-    plotted = rows.filter(function (r) { return r.dataset.type === type; })
-      .sort(function (a, b) {
-        return parseFloat(a.dataset.price) - parseFloat(b.dataset.price);
-      })
+    // Over the whole dataset, not the rendered page: the cheapest region for a type
+    // is very often not in the first 300 rows, and answering with "the cheapest of
+    // the ones that happened to be painted" would be the wrong answer confidently.
+    plotted = rows.filter(function (r) { return r.type === type; })
+      .slice()
+      .sort(function (a, b) { return a.price - b.price; })
       .slice(0, MAX_SERIES)
-      .map(function (r) { return r.dataset.key; });
+      .map(function (r) { return r.key; });
     hidden.clear();
     selectedTypes.clear(); selectedTypes.add(type);
     typeMS.refresh(); applyFilters(); syncBoxes(); drawChart();
@@ -1238,9 +1579,9 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       + ' · ' + plotted.length + ' series';
   }
 
-  function openZoom(row) {
-    if (row) {
-      plotted = [row.dataset.key];
+  function openZoom(key) {
+    if (key) {
+      plotted = [key];
       hidden.clear();
       syncBoxes();
     }
@@ -1287,22 +1628,24 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     });
   }
 
-  function sort(key) {
+  // Applies the current sortKey/sortDir. Split out from `sort()` so the initial
+  // state can be *made* true rather than merely asserted: the header paints
+  // "price, ascending" on load, and the server orders rows by (type, price) --
+  // which looks sorted for the first few rows of the first instance type and then
+  // quietly is not. An indicator that describes an order nothing established is the
+  // same species of claim as a blank availability cell.
+  function sortRows() {
+    var key = sortKey;
     var numeric = key !== 'type' && key !== 'region';
-    if (sortKey === key) {
-      sortDir = -sortDir;
-    } else {
-      sortKey = key;
-      // First click on a rank-like column shows the extreme you came for: the
-      // biggest spread, the most price moves. Price and names still open ascending.
-      sortDir = (numeric && key !== 'price' && key !== 'pergpu'
-                 && key !== 'ondemand') ? -1 : 1;
-    }
     rows.sort(function (a, b) {
       if (!numeric) {
-        return a.dataset[key].localeCompare(b.dataset[key]) * sortDir;
+        return a[key].localeCompare(b[key]) * sortDir;
       }
-      var av = parseFloat(a.dataset[key]), bv = parseFloat(b.dataset[key]);
+      // `null` is how the dataset spells "not applicable" -- no GPU, no history in
+      // the window, no on-demand price observed. Mapped to NaN so it falls through
+      // the not-applicable branch below rather than comparing as 0.
+      var av = a[key] === null || a[key] === undefined ? NaN : a[key];
+      var bv = b[key] === null || b[key] === undefined ? NaN : b[key];
       // An empty attribute means "not applicable": no GPU, no history in the window,
       // no on-demand price observed. It is not a small number -- sorting it as one is
       // what put 500 dashes ahead of every real value in "$ per GPU".
@@ -1316,7 +1659,23 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       if (aNA) { return 0; }
       return (av - bv) * sortDir;
     });
-    rows.forEach(function (row) { tbody.appendChild(row); });
+  }
+
+  function sort(key) {
+    var numeric = key !== 'type' && key !== 'region';
+    if (sortKey === key) {
+      sortDir = -sortDir;
+    } else {
+      sortKey = key;
+      // First click on a rank-like column shows the extreme you came for: the
+      // biggest spread, the most price moves. Price and names still open ascending.
+      sortDir = (numeric && key !== 'price' && key !== 'pergpu'
+                 && key !== 'ondemand') ? -1 : 1;
+    }
+    sortRows();
+    // Re-filter rather than re-render: `view` is a subset of `rows` in the old
+    // order, so painting it now would sort the dataset and leave the page as it was.
+    applyFilters();
     paintSortIndicators();
   }
 
@@ -1373,8 +1732,16 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   });
 
   // ---------------------------------------------------------------- wiring
-  var typeMS = multiselect('ms-type', {{ types_seen | tojson }}, selectedTypes, applyFilters);
-  var regionMS = multiselect('ms-region', {{ regions_seen | tojson }}, selectedRegions, applyFilters);
+  // Derived from the payload rather than passed separately by the server: the two
+  // would be the same list twice, and the copy that went stale would be the one
+  // driving the filters.
+  var TYPE_GROUPING = { label: typeGroup, rank: typeGroupRank };
+  var REGION_GROUPING = { label: regionGroup };
+
+  var typeMS = multiselect('ms-type', SPECS.map(function (s) { return s[0]; }).sort(),
+    selectedTypes, applyFilters, TYPE_GROUPING);
+  var regionMS = multiselect('ms-region', REGION_NAMES.slice().sort(),
+    selectedRegions, applyFilters, REGION_GROUPING);
   gpuonly.addEventListener('change', applyFilters);
 
   document.getElementById('clear').addEventListener('click', function () {
@@ -1416,13 +1783,14 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
 
   // Everything currently past the filters. This is what "Scan now" means, and the
   // button says so before it is clicked rather than after.
+  // Everything past the filters -- not everything on screen. The render cap is a
+  // painting limit, and scanning only the 300 rows that happen to be painted would
+  // silently narrow a scope the user set with the filter bar.
   function visibleScope() {
     var types = {}, regions = {};
-    rows.forEach(function (row) {
-      if (!row.classList.contains('hidden')) {
-        types[row.dataset.type] = 1;
-        regions[row.dataset.region] = 1;
-      }
+    view.forEach(function (row) {
+      types[row.type] = 1;
+      regions[row.region] = 1;
     });
     return { types: Object.keys(types), regions: Object.keys(regions) };
   }
@@ -1456,8 +1824,10 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   // Mutated in place rather than reassigned: the multiselect closes over these
   // arrays, so replacing them would leave it rendering the old list forever.
   var typeOptions = [], regionOptions = [];
-  var msPickType = multiselect('pick-type', typeOptions, pickTypes, paintEstimate);
-  var msPickRegion = multiselect('pick-region', regionOptions, pickRegions, paintEstimate);
+  var msPickType = multiselect('pick-type', typeOptions, pickTypes, paintEstimate,
+    TYPE_GROUPING);
+  var msPickRegion = multiselect('pick-region', regionOptions, pickRegions, paintEstimate,
+    REGION_GROUPING);
 
   var catalogLoaded = false;
   var BASELINE_HINT = pickHint.textContent;
@@ -1472,8 +1842,8 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   function optionsFromTable() {
     var types = {}, regions = {};
     rows.forEach(function (row) {
-      types[row.dataset.type] = 1;
-      regions[row.dataset.region] = 1;
+      types[row.type] = 1;
+      regions[row.region] = 1;
     });
     fillOptions(typeOptions, Object.keys(types).sort());
     fillOptions(regionOptions, Object.keys(regions).sort());
@@ -1517,8 +1887,21 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   // for on-demand list prices, fanned out 8 at a time. Measured live: 1x1 = 2.3s,
   // 2x2 = 2.6s, 40x17 = 6.7s before on-demand was added. Deliberately coarse -- it
   // exists to stop "40x17, is that a second or a minute?", not to be a stopwatch.
+  // Two regimes, because the two APIs behind a scan scale differently.
+  //
+  // Spot history barely notices how many types you asked for: the call takes no
+  // instance-type filter and paginates the whole region regardless. Measured across
+  // 17 regions, 40 types is 6.7s and all 1,339 is 9.2s -- so regions dominate.
+  //
+  // On-demand list prices are the opposite, and they are what a big scan actually
+  // costs: one call per type across a pool of 8, until the type count passes the
+  // provider's bulk threshold and it switches to a single ~54s catalogue sweep.
+  // The old estimate modelled only the per-type pool, so a full-catalogue scan was
+  // quoted at ~168s when it takes ~63s.
   function estimateSeconds(types, regions) {
-    return 1.8 + 0.29 * regions + 0.12 * Math.ceil(types / 8) * 8;
+    var spot = 2.2 + 0.25 * regions + 0.0015 * types;
+    var onDemand = types > 100 ? 54 : 0.8 * Math.ceil(types / 8);
+    return spot + onDemand;
   }
 
   function paintEstimate() {
@@ -1532,9 +1915,10 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     var seconds = Math.round(estimateSeconds(types, regions));
     pickEst.innerHTML = '<strong>' + plural(types, 'type') + ' × '
       + plural(regions, 'region') + '</strong> — roughly ' + seconds + 's';
-    // Everything unselected means everything, which off a 1,354-type catalog is a
-    // very different click from the one the reader thinks they are making.
-    pickEst.classList.toggle('warn', types * regions > 4000);
+    // Warn on the estimate, not on types x regions: that product is now routinely
+    // in the tens of thousands for a scan that takes a minute, so it would warn
+    // about everything and mean nothing.
+    pickEst.classList.toggle('warn', seconds > 30);
   }
 
   var pickerOpened = false;
@@ -1625,17 +2009,12 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     });
   }
 
-  // Per-row rescan: one type in one region. The cheapest possible question to ask
-  // AWS, for when you are watching a single price and don't want to re-sweep 17
-  // regions to see it move.
-  rows.forEach(function (row) {
-    row.querySelector('.rescan').addEventListener('click', function (event) {
-      event.stopPropagation();   // the row click plots; this one refetches
-      runScan([row.dataset.type], [row.dataset.region], event.currentTarget, '…');
-    });
-  });
+  // Per-row rescan (one type in one region -- the cheapest possible question to ask
+  // AWS) is handled by the delegated tbody listener above, alongside every other
+  // row action, because the row it lives on is replaced on each re-render.
   {% endif %}
 
+  sortRows();          // make the header's opening claim true before painting it
   applyFilters();
   syncBoxes();
   paintSortIndicators();

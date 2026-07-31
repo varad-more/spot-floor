@@ -125,3 +125,55 @@ was correct until the value space widened.
 
 **Rule:** when a check fails in a full run but passes in isolation, suspect the harness
 before the code.
+
+## A cost estimate that justifies a limit deserves the same scrutiny as the limit
+
+The watchlist was 40 types because a comment said an unbounded scan was "~46M rows
+and ~57k API calls". That number assumed **one call per (type, region)**.
+`DescribeSpotPriceHistory` takes no instance-type filter at all — it paginates the
+whole region either way. Measured unfiltered: **9.2s, 17 paginated calls, 15,078
+rows.** The estimate was wrong by three orders of magnitude, it had been sitting in
+a docstring being cited as settled fact, and it was the sole justification for the
+constraint that made `g5.2xlarge` missing.
+
+The real constraint was elsewhere entirely: rendering 15,078 rows server-side is a
+36 MB document. That one is genuine — but it wanted a different fix, and the wrong
+number pointed at the wrong fix for months.
+
+**Rule:** when a limit is justified by a number, re-measure the number before
+accepting the limit — especially a number written by you. An estimate that was never
+checked is a guess wearing a unit.
+
+## Order before you truncate
+
+The grouped menu ranked accelerated families first and then capped the list at 120.
+The cap ran on the *alphabetical* list, so the 120 slots filled with `a1`, `c1`,
+`c3`… and no GPU family ever reached the menu. The ordering code was correct, ran,
+and was invisible.
+
+**Rule:** when a pipeline both sorts and truncates, the sort must come first. A cap
+applied before the ordering silently discards exactly the items the ordering existed
+to promote — and it fails *quietly*, because the output looks like a plausible list.
+
+## An indicator that describes an order nothing established
+
+The header opened painting "price ↑" while the server ordered rows by
+`(instance_type, price)`. The first few rows of the first type ascend, so it looked
+right in any screenshot and in the first screenful of any manual check. Nothing had
+ever sorted the data; the arrow was decoration asserted as fact.
+
+**Rule:** initial UI state is a claim, and claims get established, not assumed. If
+the page says "sorted by X", sort by X on load — don't rely on the data arriving
+that way.
+
+## Three harness bugs per real bug is the normal ratio
+
+The browser sweep found 5 failures on the first pass. Two were real (the sort
+indicator, the truncate-before-order bug). Three were the harness: a bare `.focus()`
+that fires no event headless, a row count hardcoded while a live poller kept adding
+rows underneath it, and a selector demanding a `polyline` from a series with one
+observation — which correctly draws a **circle**, by a rule this repo wrote down.
+
+**Rule:** on a red check, reproduce it in isolation before editing the product. And
+never assert a fixed count against a system that is still ingesting — derive it from
+the page. (Third time this file has recorded a stale hardcoded count.)

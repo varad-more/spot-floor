@@ -182,21 +182,28 @@ def fake_pricing_client(*, fail: str | None = None) -> MagicMock:
 
     Mirrors the real shape that makes this affordable: the request carries no
     ``regionCode`` filter, so one call covers all regions for one instance type.
+
+    It answers the *unfiltered* sweep too -- no ``instanceType`` filter means every
+    type, which is how the provider prices a full-catalogue watchlist in one cursor
+    instead of 1,339 calls.
     """
     client = MagicMock(name="pricing")
 
     def paginate(*, ServiceCode: str, Filters: list[dict]) -> list[dict]:
         if fail:
             raise _boto_error(fail)
-        wanted = next(f["Value"] for f in Filters if f["Field"] == "instanceType")
+        wanted = next(
+            (f["Value"] for f in Filters if f["Field"] == "instanceType"), None
+        )
         entries = [
             _price_list_entry(t, r, usd)
             for (t, r), usd in ON_DEMAND_USD_HR.items()
-            if t == wanted
+            if wanted is None or t == wanted
         ]
         # A China region on every request, quoted in CNY. It must be dropped, not
         # converted -- we did not observe an exchange rate.
-        entries.append(_price_list_entry(wanted, "cn-north-1", None, cny=0.7))
+        for instance_type in {wanted} if wanted else {t for t, _ in ON_DEMAND_USD_HR}:
+            entries.append(_price_list_entry(instance_type, "cn-north-1", None, cny=0.7))
         return [{"PriceList": entries}]
 
     paginator = MagicMock()
@@ -230,10 +237,12 @@ def provider(
 
     pricing = fake_pricing_client(fail=pricing_fails)
     kwargs.setdefault("pricing_factory", lambda: pricing)
+    # `setdefault`, not a fixed argument: `instance_types=None` is a real and
+    # different mode ("every type EC2 offers") that tests have to be able to ask for.
+    kwargs.setdefault("instance_types", WATCHLIST)
 
     p = AwsProvider(
         regions=regions,
-        instance_types=WATCHLIST,
         client_factory=factory,
         max_workers=2,
         **kwargs,
@@ -723,3 +732,137 @@ def test_live_history_is_a_change_log_not_a_sample_series() -> None:
         group.sort(key=lambda s: s.first_seen)
         for earlier, later in zip(group, group[1:]):
             assert earlier.last_seen == later.first_seen, f"gap or overlap in {key}"
+
+
+# --- the whole catalogue -----------------------------------------------------
+# `instance_types=None` means every type EC2 offers. It exists because a curated
+# watchlist is wrong the moment someone looks for a type nobody curated -- which is
+# exactly how g5.2xlarge came to be missing from a page listing g5.xlarge and
+# g5.12xlarge.
+
+
+def test_all_types_asks_the_history_api_for_no_types_at_all() -> None:
+    """Not a 1,339-entry `InstanceTypes` list -- no filter.
+
+    `DescribeSpotPriceHistory` paginates the whole region regardless, so naming
+    every type buys nothing and costs a request body per page. Measured unfiltered
+    at 3.0s for us-east-1's 1,320 types, the same as the 40-type filter.
+    """
+    p = provider(instance_types=None, regions=("us-east-1",))
+    p.fetch()
+
+    paginate = p._test_clients["us-east-1"].get_paginator(
+        "describe_spot_price_history"
+    ).paginate
+    kwargs = paginate.call_args.kwargs
+    assert "InstanceTypes" not in kwargs, "an all-types scan named types anyway"
+    assert kwargs["ProductDescriptions"] == ["Linux/UNIX"]
+
+
+def test_all_types_reads_the_catalog_unfiltered() -> None:
+    """An empty `Values` filter matches nothing; it does not mean everything.
+
+    Filtering by `instance-type` with no values would hand back an empty catalog,
+    and `fetch` drops every quote whose type is not in the catalog -- so the table
+    would come back silently empty rather than obviously broken.
+    """
+    p = provider(instance_types=None, regions=("us-east-1",))
+    catalog = p.catalog()
+
+    assert set(catalog) == {"p5.48xlarge", "g6.12xlarge", "m5.large"}
+    paginate = p._test_clients["us-east-1"].get_paginator(
+        "describe_instance_types"
+    ).paginate
+    assert "Filters" not in paginate.call_args.kwargs
+
+
+def test_all_types_prices_on_demand_in_one_sweep_not_one_call_per_type() -> None:
+    """Past the threshold the `instanceType` filter is dropped as well.
+
+    Measured: 254 pages and 53.7s for all 24,383 (type, region) pairs, against
+    1,339 separate calls for the same answer.
+    """
+    p = provider(instance_types=None, regions=("us-east-1",))
+    prices = p.on_demand_prices()
+
+    assert p._test_pricing.get_paginator.return_value.paginate.call_count == 1
+    filters = p._test_pricing.get_paginator.return_value.paginate.call_args.kwargs["Filters"]
+    assert not [f for f in filters if f["Field"] == "instanceType"]
+    # The four SKU-pinning filters stay: without them one type returns a dozen SKUs
+    # and "the on-demand price" becomes whichever sorted first.
+    assert {f["Field"] for f in filters} == {
+        "operatingSystem", "tenancy", "preInstalledSw", "capacitystatus"
+    }
+    assert prices[("m5.large", "us-east-1")] == pytest.approx(0.096)
+    assert prices[("p5.48xlarge", "us-east-1")] == pytest.approx(98.32)
+
+
+def test_a_small_watchlist_still_prices_per_type() -> None:
+    """The sweep is a fixed ~54s; three types individually are three fast calls.
+
+    The threshold picks whichever shape is cheaper rather than committing the
+    provider to one of them.
+    """
+    p = provider()
+    p.on_demand_prices()
+
+    calls = p._test_pricing.get_paginator.return_value.paginate.call_args_list
+    assert len(calls) == len(WATCHLIST)
+    assert {
+        next(f["Value"] for f in c.kwargs["Filters"] if f["Field"] == "instanceType")
+        for c in calls
+    } == set(WATCHLIST)
+
+
+def test_the_bulk_sweep_still_drops_non_usd_regions() -> None:
+    """CNY-quoted regions are skipped, never converted, on both paths."""
+    p = provider(instance_types=None, regions=("us-east-1",))
+    assert not [r for (_t, r) in p.on_demand_prices() if r.startswith("cn-")]
+
+
+def test_a_failed_bulk_sweep_costs_the_column_not_the_table() -> None:
+    p = provider(instance_types=None, regions=("us-east-1",), pricing_fails="AccessDenied")
+    offerings = p.fetch()
+
+    assert p.on_demand_prices() == {}
+    assert [o for o in offerings if o.price_kind is PriceKind.SPOT], "spot rows vanished"
+    assert any("AccessDenied" in note for note in p.notes)
+
+
+# --- regions the account cannot reach ----------------------------------------
+
+
+def test_regions_the_account_has_not_opted_into_are_named_not_hidden() -> None:
+    """17 of AWS's 34 commercial regions are opt-in. Showing 17 without saying so
+    would let a reader read "no capacity" where the truth is "never asked"."""
+    client = fake_client("us-east-1")
+    client.describe_regions.side_effect = lambda **kw: (
+        {"Regions": [{"RegionName": "us-east-1"}, {"RegionName": "eu-west-1"}]}
+        if not kw.get("AllRegions")
+        else {"Regions": [
+            {"RegionName": "us-east-1"}, {"RegionName": "eu-west-1"},
+            {"RegionName": "af-south-1"}, {"RegionName": "ap-east-1"},
+            # Separate partitions these credentials cannot reach at all, and not
+            # something an account owner opts into from here.
+            {"RegionName": "cn-north-1"}, {"RegionName": "us-gov-west-1"},
+        ]}
+    )
+    p = AwsProvider(
+        regions=None,
+        instance_types=WATCHLIST,
+        client_factory=lambda region: client,
+        pricing_factory=fake_pricing_client,
+    )
+
+    assert p.regions() == ["eu-west-1", "us-east-1"]
+    note = next(n for n in p.notes if "not enabled" in n)
+    assert "af-south-1" in note and "ap-east-1" in note
+    assert "cn-north-1" not in note and "us-gov-west-1" not in note
+    assert "no capacity" not in note.lower() or "not because" in note
+
+
+def test_an_explicit_region_list_gets_no_opt_in_caveat() -> None:
+    """You asked for two regions; the other 32 are not a caveat about your request."""
+    p = provider(regions=("us-east-1",))
+    p.fetch()
+    assert not [n for n in p.notes if "not enabled" in n]

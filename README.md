@@ -13,9 +13,14 @@ are free.
 
 ### [→ See a sample page](https://varadmore.me/spot-floor/)
 
-That page is **real data — 646 rows across 17 regions — captured on 2026-07-30 and
-frozen.** It is a static snapshot, not a live feed: nothing refreshes it, and spot
-prices move continuously, so read every number as "what was true then".
+That page is **real data — every EC2 instance type, priced across every region your
+account can reach — captured and frozen.** It is a static snapshot, not a live feed:
+nothing refreshes it, and spot prices move continuously, so read every number as
+"what was true then".
+
+Sizing the instance itself rather than pricing it? [EC2 Instance
+Advisor](https://varadmore.me/ec2-instance-advisor/) weighs vCPU, memory, GPU and
+network against your priorities; this page picks up where that one leaves off.
 
 **For actual work, clone this repo and run it with your own AWS credentials.** No
 credentials are stored in this repository and CI cannot refresh that page, which is
@@ -32,12 +37,20 @@ deliberate — the sample exists to show you the interface, not to be a data sou
 | **AZ spread** | how much price variation the regional number hid |
 | **7-day price chart** | multi-series — plot one instance across every region and compare |
 | **Price moves** | how often the price changed, a contention hint |
-| **Any instance family** | GPU, compute, memory, burstable, storage — not just GPUs |
+| **Every instance type EC2 offers** | ~1,350 of them, discovered from the API — GPU, compute, memory, burstable, storage |
+| **Grouped filters** | instance types by family (accelerated first, each labelled with its GPU), regions by geography |
 | **Availability** | always `unknown`, and [here's why](#the-one-thing-it-cannot-tell-you) |
 
 Measured live: `p4d.24xlarge` in `us-east-1` at **$7.94/hr spot against $21.96
 on-demand — 64% off**. A negative saving is possible and is shown as one: spot above
 list price is a real market state under contention, not a data error.
+
+**The scope is the whole catalogue, not a curated list.** A hand-picked watchlist is
+wrong the moment you look for something nobody thought to pick — which is exactly how
+`g5.2xlarge` came to be missing from a page that listed `g5.xlarge` and `g5.12xlarge`.
+At full scope that is ~15,000 rows, so the table renders in the browser from an
+embedded dataset and paints a page at a time; filtering and sorting still run over
+every row, and the bar under the table says how many of them you are looking at.
 
 Multi-select filters with autocomplete, sortable and resizable columns, a light/dark
 toggle, and any sparkline (or **⤢ Enlarge**) opens the chart full size.
@@ -142,7 +155,17 @@ throttles are per region.
 | 1 type × 1 region (one **⟳**) | 2.3s |
 | 2 types × 2 regions | 2.6s |
 | 40 types × 17 regions (2,003 quotes) | 6.7s |
-| 30-day backfill (172k segments) | ~35s |
+| **every type × 17 regions (46,417 quotes)** | **9.2s** |
+| 30-day backfill, 40 types (172k segments) | ~35s |
+| 7-day backfill, every type (~1.7M segments) | ~4min |
+| on-demand list prices, every type (24,383 pairs) | 54s, once per process |
+
+An unfiltered sweep costs about what a 40-type one does, because
+`DescribeSpotPriceHistory` takes no instance-type filter and paginates the whole
+region either way — 17 paginated calls, not one per type. This repo's own earlier
+estimate of "~57k API calls" assumed the opposite and was wrong by three orders of
+magnitude; the watchlist was never bounded by API cost, only by how many rows a page
+could render.
 
 ---
 
@@ -171,7 +194,7 @@ All optional, all environment variables.
 |---|---|---|
 | `SPOTFLOOR_DB` | `spotfloor.db` | SQLite path. Pure cache — safe to delete. |
 | `SPOTFLOOR_REGIONS` | *all enabled* | Comma-separated. Unset discovers your regions. |
-| `SPOTFLOOR_INSTANCE_TYPES` | 40-type watchlist | Comma-separated. Track exactly what you want. |
+| `SPOTFLOOR_INSTANCE_TYPES` | *every type EC2 offers* | Comma-separated. Set it to narrow the scope for a faster local run. |
 | `SPOTFLOOR_HISTORY_DAYS` | `7` | What the page charts. |
 | `SPOTFLOOR_BACKFILL_DAYS` | `30` | Backfill depth. AWS retains ~89. |
 | `SPOTFLOOR_POLL_INTERVAL_S` | `300` | Background poll interval. |
@@ -193,7 +216,7 @@ uv run python scripts/serve.py --backfill                # dashboard
 uv run python scripts/scan.py --help                     # one-shot scan
 uv run python scripts/snapshot.py --out site --backfill   # static export
 
-uv run pytest -m "not live"    # 202 tests, no AWS needed
+uv run pytest -m "not live"    # 212 tests, no AWS needed
 uv run pytest                  # + live correctness gates
 ```
 

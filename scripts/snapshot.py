@@ -63,7 +63,12 @@ async def render(
             market = await client.get("/api/market")
             market.raise_for_status()
             (out / "api").mkdir(parents=True, exist_ok=True)
-            (out / "api" / "market.json").write_text(json.dumps(market.json(), indent=2))
+            # Compact, not pretty-printed. At the full EC2 catalogue this file is
+            # 15,000+ rows and `indent=2` roughly doubles it for whitespace that no
+            # consumer reads -- and every regeneration commits the whole thing again.
+            (out / "api" / "market.json").write_text(
+                json.dumps(market.json(), separators=(",", ":"))
+            )
             written.append(out / "api" / "market.json")
 
             history_dir = out / "api" / "history"
@@ -75,7 +80,7 @@ async def render(
                 if response.status_code != 200:
                     continue
                 path = history_dir / f"{instance_type}.json"
-                path.write_text(json.dumps(response.json(), indent=2))
+                path.write_text(json.dumps(response.json(), separators=(",", ":")))
                 written.append(path)
 
     return written
@@ -144,6 +149,14 @@ def main() -> int:
                         result.skipped,
                     )
 
+            # **The clock is read here, not at the top.** A full-catalogue backfill
+            # takes ~20 minutes, and stamping this tick with a `now` captured before
+            # it would claim these prices were read 20 minutes before they were.
+            # `latest()` then discards them as stale (the freshness TTL is 15
+            # minutes) and the page renders with zero rows -- while the log happily
+            # reports "1,345 instance types", because it asked with the same stale
+            # clock. Invisible at 40 types, where the backfill took 35 seconds.
+            now = datetime.now(UTC)
             report = run_tick(providers, store, now=now)
             logger.info(
                 "fetched=%s inserted=%d extended=%d failures=%s",
@@ -170,8 +183,21 @@ def main() -> int:
         if removed:
             logger.info("pruned %d segments older than %dd", removed, retain_days)
 
-        records = store.latest(OfferingFilter(), now=now)
+        # Asked with the wall clock, not with `now`, because that is the clock the
+        # *app* will use a moment from now when it renders. Anything already stale
+        # by this point renders as an empty table, and an empty table published over
+        # a good snapshot is the failure this whole block exists to prevent --
+        # `report.fetched` above cannot catch it, since a tick can fetch thousands
+        # of rows and still leave nothing current enough to draw.
+        records = store.latest(OfferingFilter(), now=datetime.now(UTC))
         instance_types = sorted({r.offering.instance_type for r in records})
+        if not records:
+            logger.error(
+                "nothing is current enough to render (%d types stored, but none within "
+                "the freshness window); refusing to publish an empty page",
+                len({r.offering.instance_type for r in store.latest(OfferingFilter(), now=now)}),
+            )
+            return 1
 
         # Notes go through the constructor, not app.state: lifespan startup runs
         # later and resets state, which silently dropped the "AWS is not

@@ -15,6 +15,8 @@ The load-bearing tests in this file are the ones about what the page must *say*:
 
 from __future__ import annotations
 
+import json
+import re
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -23,6 +25,64 @@ from fastapi.testclient import TestClient
 from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
 from spotfloor.web.app import NO_CREDENTIALS_NOTE, WebConfig, create_app
+
+# --- reading the page's data -------------------------------------------------
+# The table is rendered by the browser from an embedded payload, because the full
+# EC2 catalogue is 15,078 rows and server-rendering that is a ~36 MB document. So
+# assertions about *what the page knows* read the payload; assertions about what it
+# *does* with that knowledge read the rendering code. Both still run over the real
+# route -- neither is a second implementation of the page.
+
+
+def table_data(body: str) -> dict:
+    """The embedded row payload the client renders from."""
+    match = re.search(
+        r'<script id="tabledata" type="application/json">(.*?)</script>', body, re.S
+    )
+    assert match, "no table data embedded"
+    return json.loads(match.group(1))
+
+
+def payload_row(payload: dict, instance_type: str, region: str) -> dict:
+    """One row, with its interned indices resolved back to names."""
+    for raw in payload["rows"]:
+        spec = payload["specs"][raw[0]]
+        if spec[0] == instance_type and payload["regions"][raw[1]] == region:
+            zone = lambda i: None if i < 0 else payload["zones"][i]  # noqa: E731
+            return {
+                "instance_type": spec[0],
+                "family": spec[1],
+                "vcpus": spec[2],
+                "memory_gib": spec[3],
+                "gpu_model": spec[4],
+                "gpu_count": spec[5],
+                "region": region,
+                "price": raw[2],
+                "zone": zone(raw[3]),
+                "zone_count": raw[4],
+                "dearest_zone": zone(raw[5]),
+                "dearest_price": raw[6],
+                "on_demand": raw[7],
+                "moves": raw[8],
+                "cv": raw[9],
+                "series": decode_rle(raw[10]),
+                "price_kind": raw[11],
+            }
+    raise AssertionError(f"no row for {instance_type} in {region}")
+
+
+def decode_rle(encoded: str) -> list[float | None]:
+    """Inverse of `app._rle`. `null` must survive the round trip as `None`."""
+    out: list[float | None] = []
+    for token in encoded.split(","):
+        if not token:
+            continue  # only reachable for an entirely empty series
+        head, sep, count = token.partition(":")
+        if not sep:
+            out.append(float(head))
+            continue
+        out.extend([None if head == "" else float(head)] * int(count))
+    return out
 
 
 def offering(
@@ -305,11 +365,30 @@ def test_the_multiselects_are_populated_with_every_observed_value(client) -> Non
     assert '"us-east-1"' in body and '"us-west-2"' in body
 
 
-def test_rows_carry_the_data_attributes_the_filters_read(client) -> None:
+def test_rows_carry_the_fields_the_filters_and_sorts_read(client) -> None:
+    """Every column the header can sort by must exist on the row objects.
+
+    These used to be `data-` attributes on server-rendered `<tr>`s. They are now
+    fields on the embedded rows, but the contract is the same one and breaking it
+    fails the same way: a sort key with no backing value silently sorts nothing.
+    """
     body = client.get("/").text
-    for attribute in ("data-key", "data-type", "data-family", "data-region",
-                      "data-gpu", "data-price"):
-        assert attribute in body
+    payload = table_data(body)
+    row = payload_row(payload, "m5.large", "us-east-1")
+
+    assert row["price"] > 0
+    assert row["zone"].startswith("us-east-1"), "the price must name the zone it came from"
+    assert row["zone_count"] >= 1
+    assert row["family"] == "m5"
+
+    # The sort keys the header advertises, and where each one comes from. `spread`,
+    # `saves` and `pergpu` are derived client-side from fields above, so they are
+    # asserted through the deriving code rather than the payload.
+    for key in ("type", "region", "price", "ondemand", "saves", "spread",
+                "pergpu", "moves"):
+        assert f'data-key="{key}"' in body, f"header offers no {key} column"
+    assert "spread: price > 0 ? (dearest / price - 1) * 100 : 0" in body
+    assert "pergpu: gpuCount ? price / gpuCount : null" in body
 
 
 # --- the chart ---------------------------------------------------------------
@@ -317,20 +396,14 @@ def test_rows_carry_the_data_attributes_the_filters_read(client) -> None:
 
 def test_the_page_embeds_series_data_for_the_chart(client) -> None:
     """Embedded rather than fetched, so the chart works on a static export too."""
-    import json
-    import re
+    payload = table_data(client.get("/").text)
 
-    body = client.get("/").text
-    match = re.search(r'<script id="chartdata" type="application/json">(.*?)</script>', body, re.S)
-    assert match, "no chart data embedded"
-
-    payload = json.loads(match.group(1))
     assert payload["buckets"] > 0
     assert "step_s" in payload and "start" in payload
-    # Keyed by (instance_type, region) -- the pair the chart plots.
-    assert "m5.large|us-east-1" in payload["series"]
-    assert "m5.large|us-west-2" in payload["series"]
-    assert len(payload["series"]["m5.large|us-east-1"]) == payload["buckets"]
+    # Every row carries its own history, on the same time grid, so any pair the
+    # chart can plot is already present before the user picks one.
+    for region in ("us-east-1", "us-west-2"):
+        assert len(payload_row(payload, "m5.large", region)["series"]) == payload["buckets"]
 
 
 def test_unobserved_buckets_are_null_in_the_chart_payload(client) -> None:
@@ -338,19 +411,59 @@ def test_unobserved_buckets_are_null_in_the_chart_payload(client) -> None:
 
     Sending 0 or a carried-forward price would make the chart assert an observation
     that was never made -- the same class of claim as a fabricated availability.
+    The run-length encoding is the new place this could go wrong: a gap has to
+    survive being compressed alongside the numbers around it.
     """
-    import json
-    import re
-
-    body = client.get("/").text
-    payload = json.loads(
-        re.search(r'id="chartdata" type="application/json">(.*?)</script>', body, re.S).group(1)
-    )
-    series = payload["series"]["m5.large|us-east-1"]
+    series = payload_row(table_data(client.get("/").text), "m5.large", "us-east-1")["series"]
 
     # The fixture writes one observation, so most of the 7-day window is unobserved.
     assert None in series, "expected gaps to be present as null"
     assert 0 not in series, "a gap was encoded as zero"
+
+
+def test_the_rle_round_trip_preserves_gaps_and_values() -> None:
+    """The encoding is only safe if it is exactly reversible, gaps included."""
+    from spotfloor.web.app import _rle
+
+    original = [None, 0.5, 0.5, 0.5, None, None, 0.25, None]
+    assert decode_rle(_rle(original)) == original
+    # The compression that makes the full catalogue affordable: eight buckets of one
+    # price is one token, not eight.
+    assert _rle([0.5] * 8) == "0.5:8"
+    assert _rle([None] * 4) == ":4"
+    # A run of one observed value drops its count -- most runs are length one, and
+    # that suffix was 95 bytes per row of pure overhead.
+    assert _rle([0.5]) == "0.5"
+    assert _rle([0.5, 0.25]) == "0.5,0.25"
+
+    # ...but a gap keeps its count even at length one, so these two stay distinct.
+    assert _rle([None]) == ":1"
+    assert _rle([]) == ""
+    assert decode_rle(":1") == [None]
+    assert decode_rle("") == []
+
+    # Every shape a real series takes, round-tripped.
+    for series in (
+        [None], [0.5], [], [None, None], [0.5, None, 0.5],
+        [0.5, 0.5, None, 0.25, 0.25, 0.25], [None, 0.1, None],
+    ):
+        assert decode_rle(_rle(series)) == series, series
+
+
+def test_the_client_draws_gaps_as_gaps_too(client) -> None:
+    """The sparkline moved from Python to JavaScript; its one rule moved with it.
+
+    `sparkline_svg` is still tested directly in test_sparkline.py, but the page no
+    longer calls it -- so the claim "a gap is drawn as a gap" needs an assertion
+    against the code that actually renders now.
+    """
+    body = client.get("/").text
+    assert "function sparkline(values)" in body
+    # A null starts a new run rather than contributing a point to the current one.
+    assert "if (v === null) { flush(); } else { run.push([i, v]); }" in body
+    # A run of one is a dot: a polyline with a single point renders nothing at all,
+    # which would make intermittent data look like absent data.
+    assert "if (run.length === 1)" in body
 
 
 def test_the_chart_ships_a_legend_container_and_a_plot_target(client) -> None:
@@ -429,9 +542,15 @@ def test_the_page_shows_the_on_demand_price_and_what_spot_saves(priced_client) -
     body = priced_client.get("/").text
     assert ">On-demand<" in body
     assert ">Saves<" in body
-    assert "$0.0960" in body
-    # 0.051 in the cheapest zone against 0.096 on-demand is 47% off.
-    assert "47%" in body
+
+    east = payload_row(table_data(body), "m5.large", "us-east-1")
+    assert east["on_demand"] == pytest.approx(0.096)
+    # 0.051 in the cheapest zone against 0.096 on-demand is 47% off. The percentage
+    # is derived in the browser, so the assertion covers the input and the formula
+    # that turns it into the rendered cell.
+    assert east["price"] == pytest.approx(0.051)
+    assert "saves: (onDemand && onDemand > 0) ? (1 - price / onDemand) * 100 : null" in body
+    assert (1 - east["price"] / east["on_demand"]) * 100 == pytest.approx(46.88, abs=0.01)
 
 
 def test_on_demand_is_one_row_per_region_not_a_second_row(priced_client) -> None:
@@ -457,8 +576,11 @@ def test_a_missing_on_demand_price_says_so_instead_of_reading_as_zero(priced_cli
     assert west["savings_pct"] is None
 
     body = priced_client.get("/").text
+    # Absent in the payload as null -- not as 0, which is a price.
+    assert payload_row(table_data(body), "m5.large", "us-west-2")["on_demand"] is None
+    # And rendered as a dash that says why, rather than as an empty cell.
     assert "It is not $0." in body
-    assert "This is not '0% saved'." in body
+    assert "This is not ‘0% saved’." in body
 
 
 def test_on_demand_history_never_inflates_the_price_moves_column(priced_client) -> None:
@@ -576,8 +698,9 @@ def test_the_page_ships_a_theme_toggle_that_redraws_the_chart(client) -> None:
 def test_the_chart_works_in_snapshot_mode_too(snapshot_client) -> None:
     """Charting touches only embedded data, so a static export keeps it."""
     body = snapshot_client.get("/").text
-    assert 'id="chartdata"' in body
+    assert 'id="tabledata"' in body
     assert 'id="plot"' in body
+    assert table_data(body)["rows"], "a static export shipped no rows to chart"
 
 
 def test_the_page_credits_its_author(client) -> None:
@@ -919,11 +1042,13 @@ def test_every_row_can_be_rescanned_on_its_own(client) -> None:
     quota, so each row carries its own refetch control.
     """
     body = client.get("/").text
-    assert body.count('class="rescan"') == body.count('class="cmp"') > 0, (
-        "every row offers compare, so every row must also offer rescan"
-    )
+    # Both controls are emitted by the row renderer, in the same cell, so "every row
+    # that can compare can also rescan" is a property of one function now rather
+    # than a count that has to match across thousands of rendered rows.
+    assert 'class="cmp"' in body and 'class="rescan"' in body
+    assert body.count('class="rescan"') == body.count('class="cmp"') == 1
     # The handler must send a one-element scope, not the visible filter.
-    assert "runScan([row.dataset.type], [row.dataset.region]" in body
+    assert "runScan([row.type], [row.region]" in body
 
 
 def test_the_scan_button_states_its_scope_before_the_click(client) -> None:
@@ -937,10 +1062,16 @@ def test_the_scan_button_states_its_scope_before_the_click(client) -> None:
 
 
 def test_a_snapshot_ships_no_per_row_rescan(snapshot_client) -> None:
-    """Same rule as the toolbar button: no server, so no control that pretends."""
+    """Same rule as the toolbar button: no server, so no control that pretends.
+
+    Asserted against *markup and code*, not the bare word: a comment explaining why
+    the control is absent contains the word too, and a tripwire that fires on its own
+    rationale is a tripwire that gets deleted. (Same lesson as the `97vw` assertion.)
+    """
     body = snapshot_client.get("/").text
-    assert "rescan" not in body
-    assert "runScan" not in body
+    assert 'class="rescan"' not in body, "a static export emitted a refetch button"
+    assert "function runScan" not in body, "a static export shipped the scan handler"
+    assert "api/refresh" not in body, "a static export can still POST a scan"
 
 
 def test_the_chart_can_be_enlarged_without_replacing_the_selection(client) -> None:

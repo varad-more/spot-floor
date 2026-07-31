@@ -143,10 +143,11 @@ def main() -> int:
         return 1
 
     scope_regions = ",".join(config.regions) if config.regions else "all enabled"
-    print(
-        f"scanning {len(config.instance_types)} instance type(s) "
-        f"across {scope_regions}"
+    scope_types = (
+        f"{len(config.instance_types)} instance type(s)"
+        if config.instance_types else "all instance types"
     )
+    print(f"scanning {scope_types} across {scope_regions}")
 
     store = SqliteTimeSeriesStore(config.db_path)
     try:

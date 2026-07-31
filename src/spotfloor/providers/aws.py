@@ -97,10 +97,21 @@ _ON_DEMAND_FILTERS: tuple[tuple[str, str], ...] = (
     ("capacitystatus", "Used"),
 )
 
-# A bounded watchlist across the families people actually shop between. Bounded on
-# purpose: us-east-1 alone lists 1,354 instance types, and 17 regions x 1,354 types
-# x ~2,000 history rows is ~46M rows and ~57k API calls -- neither pollable on a
-# schedule nor publishable as a static page.
+# Below this many types, pricing each one individually beats sweeping the whole
+# catalog: a per-type call is ~0.76s and they fan out across the pool, where the
+# unfiltered sweep is a fixed ~54s / 254 pages no matter how little you asked for.
+# Above it the sweep wins outright -- 1,339 types would otherwise be 1,339 calls.
+_BULK_ON_DEMAND_THRESHOLD = 100
+
+# A starter watchlist across the families people actually shop between.
+#
+# **This is a default, not a ceiling.** ``instance_types=None`` prices every type
+# EC2 offers, which is what the published page now does. The old comment here
+# claimed an unbounded scan was "~46M rows and ~57k API calls"; that assumed one
+# call per (type, region), and `DescribeSpotPriceHistory` does not work that way --
+# it takes no type filter at all and paginates the region. Measured unfiltered
+# across 17 regions: 9.2s, 17 paginated calls, 15,078 (type, region) rows. The real
+# constraint was only ever how many rows a page can render.
 DEFAULT_INSTANCE_TYPES: tuple[str, ...] = (
     # GPU / accelerated
     "p5.48xlarge", "p4d.24xlarge", "g6.xlarge", "g6.12xlarge", "g6e.xlarge",
@@ -194,7 +205,7 @@ class AwsProvider:
         self,
         *,
         regions: Sequence[str] | None = None,
-        instance_types: Sequence[str] = DEFAULT_INSTANCE_TYPES,
+        instance_types: Sequence[str] | None = DEFAULT_INSTANCE_TYPES,
         client_factory: Callable[[str], Any] | None = None,
         pricing_factory: Callable[[], Any] | None = None,
         creds_owner: CredsOwner = CredsOwner.APP,
@@ -203,6 +214,13 @@ class AwsProvider:
     ) -> None:
         """``regions=None`` discovers every enabled region on first use.
 
+        ``instance_types=None`` prices **every type EC2 offers**, discovered rather
+        than listed. It is a distinct state from an empty sequence, which would mean
+        "price nothing" -- and from a long explicit list, because the unfiltered
+        calls are cheaper than the enumerated ones, not merely equivalent: the
+        history API paginates a whole region regardless, and the catalog paginates
+        whether or not you name what you want.
+
         ``max_workers`` fans out across regions concurrently. Safe because EC2 API
         throttles are applied *per region*, so parallel calls to different regions
         do not contend for one another's token bucket. It is a real speedup, not a
@@ -210,7 +228,7 @@ class AwsProvider:
         and well under two in parallel.
         """
         self._regions = list(regions) if regions is not None else None
-        self._instance_types = tuple(instance_types)
+        self._instance_types = None if instance_types is None else tuple(instance_types)
         self._client_factory = client_factory or _default_client_factory
         self._pricing_factory = pricing_factory or _default_pricing_factory
         self._creds_owner = creds_owner
@@ -221,6 +239,7 @@ class AwsProvider:
         self._catalog: dict[str, InstanceSpec] | None = None
         self._all_types: list[str] | None = None
         self._failures: dict[str, str] = {}
+        self._unavailable: list[str] = []
         self._pricing_failure: str | None = None
         self._on_demand: dict[tuple[str, str], float] | None = None
         self._scores: dict[str, tuple[Availability, float | None]] = {}
@@ -235,7 +254,39 @@ class AwsProvider:
     def regions(self) -> list[str]:
         if self._regions is None:
             self._regions = enabled_regions(self._client(self._catalog_region))
+            self._discover_unavailable()
         return self._regions
+
+    def _discover_unavailable(self) -> None:
+        """Which commercial regions exist but this account has not opted into.
+
+        Costs one extra ``describe_regions``. Worth it: "all regions" is a claim the
+        page makes, and 17 of AWS's 34 are opt-in. Showing 17 without saying so
+        would let a reader conclude a region has no capacity when the truth is that
+        we were never allowed to ask -- the same error the per-region failure notes
+        exist to prevent, one level up.
+
+        Best-effort. ``AllRegions=True`` needs no extra IAM permission in practice,
+        but a policy could deny it, and losing a caveat must not lose the table.
+        """
+        try:
+            described = self._client(self._catalog_region).describe_regions(
+                AllRegions=True
+            )["Regions"]
+        except Exception as exc:  # noqa: BLE001 - a missing caveat, not a dead app
+            logger.warning("aws: could not list opt-in regions: %s", exc)
+            return
+
+        reachable = set(self._regions or ())
+        self._unavailable = sorted(
+            region["RegionName"]
+            for region in described
+            if region["RegionName"] not in reachable
+            # China and GovCloud sit in separate partitions these credentials cannot
+            # reach at all, and are not something an account owner opts into from
+            # here -- listing them as "enable these" would be advice that cannot work.
+            and not region["RegionName"].startswith(("cn-", "us-gov-"))
+        )
 
     @property
     def notes(self) -> list[str]:
@@ -250,6 +301,15 @@ class AwsProvider:
             f"{region} could not be priced ({error}), so it is absent from the table."
             for region, error in sorted(self._failures.items())
         ]
+        if self._unavailable:
+            notes.append(
+                f"{len(self._unavailable)} AWS regions are not enabled on this account, "
+                "so they cannot be priced and are absent from the table — not because "
+                "they have no capacity, but because we were never able to ask: "
+                + ", ".join(self._unavailable)
+                + ". Opting a region in is an account-level change, made in the AWS "
+                "console under Account → AWS Regions."
+            )
         if self._pricing_failure:
             notes.append(
                 f"On-demand list prices are unavailable ({self._pricing_failure}), so "
@@ -275,6 +335,21 @@ class AwsProvider:
         """
         if self._catalog is not None:
             return self._catalog
+
+        # `instance_types=None` means every type, so there is nothing to filter by
+        # and the server-side filter is skipped entirely. Passing `Values=[]` here
+        # would not mean "everything" -- it would match nothing and hand back an
+        # empty catalog, which silently drops every row in `fetch`.
+        if self._instance_types is None:
+            catalog = {
+                spec["InstanceType"]: self._spec(spec["InstanceType"], spec)
+                for page in self._client(self._catalog_region)
+                .get_paginator("describe_instance_types")
+                .paginate()
+                for spec in page["InstanceTypes"]
+            }
+            self._catalog = catalog
+            return catalog
 
         wanted = set(self._instance_types)
         catalog: dict[str, InstanceSpec] = {}
@@ -419,6 +494,13 @@ class AwsProvider:
         single page for ``m5.large`` across 33 USD regions -- so the cost is
         O(types), not O(types x regions). A 40-type watchlist is 40 calls, not 680.
 
+        **Past ~100 types it flips to one unfiltered sweep.** Dropping the
+        ``instanceType`` filter too returns the entire EC2 on-demand catalog in 254
+        pages: measured 53.7s for 24,383 (type, region) pairs across 1,387 types.
+        That is slower than pricing 40 types individually and vastly faster than
+        pricing 1,339, so the threshold picks whichever shape is cheaper rather than
+        committing the whole provider to one of them.
+
         **Non-USD regions are skipped, never converted.** The China regions quote
         CNY, and turning that into dollars would require an exchange rate we did not
         observe. That is the same rule that keeps an unobserved bucket ``None``
@@ -432,6 +514,19 @@ class AwsProvider:
 
         self._pricing_failure = None
         prices: dict[tuple[str, str], float] = {}
+
+        if (
+            self._instance_types is None
+            or len(self._instance_types) > _BULK_ON_DEMAND_THRESHOLD
+        ):
+            try:
+                prices = self._on_demand_bulk()
+            except Exception as exc:  # noqa: BLE001 - a missing column, not a dead app
+                logger.warning("aws: bulk on-demand sweep failed: %s", exc)
+                self._pricing_failure = _error_code(exc)
+            self._on_demand = prices
+            return prices
+
         with ThreadPoolExecutor(max_workers=self._max_workers) as pool:
             futures = {
                 pool.submit(self._on_demand_for_type, instance_type): instance_type
@@ -460,20 +555,46 @@ class AwsProvider:
         recommends a client per thread, and this runs once per provider, so 40
         constructions cost less than reasoning about whether sharing is safe.
         """
-        client = self._pricing_factory()
-        filters = [
-            {"Type": "TERM_MATCH", "Field": field, "Value": value}
-            for field, value in (("instanceType", instance_type), *_ON_DEMAND_FILTERS)
-        ]
+        return self._on_demand_query(
+            (("instanceType", instance_type), *_ON_DEMAND_FILTERS)
+        )
 
+    def _on_demand_bulk(self) -> dict[tuple[str, str], float]:
+        """The whole EC2 on-demand catalog in one sweep, for an all-types watchlist.
+
+        Same query as :meth:`_on_demand_for_type` minus the ``instanceType`` filter,
+        so there is exactly one parser and one set of SKU-pinning rules. Not run
+        concurrently: it is a single paginated cursor, and the Price List API is the
+        one endpoint here with a global rather than per-region throttle.
+        """
+        return self._on_demand_query(_ON_DEMAND_FILTERS)
+
+    def _on_demand_query(
+        self, filters: Sequence[tuple[str, str]]
+    ) -> dict[tuple[str, str], float]:
+        """Run one Price List query and harvest ``(type, region) -> USD/hr`` from it.
+
+        The instance type is read back off the product attributes rather than
+        assumed from the query, because the bulk sweep does not know it up front and
+        two parsers would be two chances to disagree about which SKU is "the"
+        on-demand price.
+        """
+        client = self._pricing_factory()
         found: dict[tuple[str, str], float] = {}
+
         for page in client.get_paginator("get_products").paginate(
-            ServiceCode="AmazonEC2", Filters=filters
+            ServiceCode="AmazonEC2",
+            Filters=[
+                {"Type": "TERM_MATCH", "Field": field, "Value": value}
+                for field, value in filters
+            ],
         ):
             for blob in page["PriceList"]:
                 product = json.loads(blob)
-                region = product["product"]["attributes"].get("regionCode")
-                if not region:
+                attributes = product["product"]["attributes"]
+                region = attributes.get("regionCode")
+                instance_type = attributes.get("instanceType")
+                if not region or not instance_type:
                     continue
                 for term in product.get("terms", {}).get("OnDemand", {}).values():
                     for dimension in term.get("priceDimensions", {}).values():
@@ -547,10 +668,16 @@ class AwsProvider:
         """
         quotes: list[dict[str, Any]] = []
         paginator = self._client(region).get_paginator("describe_spot_price_history")
+        # Omitted entirely for the all-types watchlist rather than passed as a
+        # 1,339-entry list. The API paginates the whole region either way, so naming
+        # every type buys nothing and costs a request body per page -- measured
+        # unfiltered at 3.0s for us-east-1's 1,320 types.
+        scope: dict[str, Any] = (
+            {} if self._instance_types is None
+            else {"InstanceTypes": list(self._instance_types)}
+        )
         for page in paginator.paginate(
-            InstanceTypes=list(self._instance_types),
-            ProductDescriptions=["Linux/UNIX"],
-            StartTime=start,
+            ProductDescriptions=["Linux/UNIX"], StartTime=start, **scope
         ):
             quotes.extend(page["SpotPriceHistory"])
         return quotes

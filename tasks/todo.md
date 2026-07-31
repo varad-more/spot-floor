@@ -407,3 +407,77 @@ AWS's `unknown` honest rather than lazy.
 - Vast provider and its tests are kept (they document the availability thesis) but
   are no longer wired into the default app.
 - Alert engine remains unwired to the pipeline (was already true pre-pivot).
+
+---
+
+## Phase L — the whole catalog, every region, GPU-first framing
+
+Requested: *"make sure you have added all instances and all regions … g5.2xlarge
+is not present"*, plus subtle branding toward **choosing the right GPU**.
+
+### The Phase-0 cost estimate was wrong, and it was load-bearing
+
+The table at the top of this file says an unbounded scan is "~57k calls,
+non-viable". That number assumed **one call per (type, region)**. It is not:
+`describe_spot_price_history` takes *no* instance-type filter at all, and
+paginates the whole region. Re-measured live, 2026-07-30:
+
+| Measured | Bounded (40 types) | **Unbounded (all types)** |
+|---|---|---|
+| Current-price sweep, 17 regions | 6.7s | **9.2s** |
+| API calls | 17 paginated | **17 paginated** (same) |
+| Table rows (type × region) | 650 | **15,078** |
+| Distinct types priced | 40 | **1,339** |
+| On-demand list prices | 40 calls, ~4s | **1 sweep, 53.7s, 24,383 pairs** |
+| 7-day history backfill | 172k segments | **~1.66M segments, ~2 min** |
+
+So the watchlist was never bounded by API cost. It was bounded by **rendering** —
+and that is the only thing that actually has to change.
+
+- [x] **L1 — `instance_types=None` means every type.** Drop `InstanceTypes` from
+      the history call, paginate the catalog unfiltered.
+- [x] **L2 — bulk on-demand sweep.** One paginated `get_products` with no
+      `instanceType` filter returns all 24,383 (type, region) pairs. Keep the
+      per-type path for small watchlists; it wins under ~100 types.
+- [x] **L3 — the page stops server-rendering every row.** 15,078 rows × 2.4 KiB
+      is a 36 MB document and ~1M DOM nodes. Rows become a compact embedded
+      dataset; the DOM holds only what is on screen.
+- [x] **L4 — sparklines drawn client-side** from an RLE series, not 15,078 inline
+      SVGs (627 KiB at only 650 rows today).
+- [x] **L5 — regions: say what is unreachable.** 17 enabled, 17 not opted in.
+      Opting in is an account change only the owner should make — so the page
+      names them rather than quietly showing 17 of 34.
+- [x] **L6 — GPU-first framing**, subtly: title, lede, a GPU default view, and a
+      cross-link to the sibling EC2 Instance Advisor.
+- [x] **L7 — republish the snapshot** and update README/docs counts.
+- [x] **L8 — grouped option menus** (requested mid-build). A flat list of 1,339
+      types is unusable: group by **instance family**, labelled with the GPU where
+      there is one (`g5 · NVIDIA A10G`), accelerated families first. Group regions
+      by **geography** (US / Europe / Asia Pacific / …). Applies to both the filter
+      bar and the scan picker — they share one `multiselect()`.
+
+### Verified
+
+- 212 offline tests + 4 live gates pass.
+- 27/27 checks in a real browser (headless Chrome over CDP): client rendering, the
+  render cap and its notice, sparkline geometry, sort in both directions including
+  blanks-last, grouped menus with accelerated families leading, filtering to
+  `g5.2xlarge` across all 14 regions that price it, chart lines and dots, show
+  more / show all, and a clean console.
+- Live: `g5.2xlarge` prices in every region it is offered in — us-east-1 at
+  $1.0603 spot against $1.2120 on-demand.
+
+### Two bugs the browser caught that the test suite could not
+
+1. The header painted "price ↑" on load while rows arrived ordered by
+   `(instance_type, price)`. Fixed by sorting on init rather than asserting it.
+2. The grouped menu capped at 120 options *before* ranking, so alphabetical
+   `a1`/`c1` filled every slot and no GPU family ever appeared.
+
+### Left undone, deliberately
+
+- **17 regions are still unreachable** — they are opt-in and this account has not
+  enabled them. Enabling one is an account-level change for the owner to make, so
+  the page names them in a note instead.
+- **The repo has not been renamed.** `ec2-spot-advisor` was recommended; renaming
+  moves the published URL and is a GitHub setting, not a code change.

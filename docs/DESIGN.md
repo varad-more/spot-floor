@@ -90,10 +90,28 @@ comparable with no normalization. Cross-provider SKU mapping (`gpu.py`) is
 retained as *enrichment* for the GPU rows; it was load-bearing only when comparing
 Vast against AWS.
 
-**The watchlist is bounded, on purpose.** 17 regions × 1,354 types × ~2,000 history
-rows is ~46M rows and ~57k API calls — neither pollable on a schedule nor
-publishable as a static page. The default watchlist is 40 types across GPU,
-general-purpose, compute, memory, burstable and storage families.
+**The scope is every instance type — and the estimate that said otherwise was
+wrong.** This section used to argue the watchlist had to be bounded because an
+unbounded scan was "~46M rows and ~57k API calls". The call count assumed one
+request per (type, region). `DescribeSpotPriceHistory` takes no instance-type filter
+at all: it paginates the whole region either way, so an unfiltered sweep is the same
+17 paginated calls as a 40-type one. Re-measured live, 2026-07-30:
+
+| | 40 types | every type |
+|---|---|---|
+| Sweep, 17 regions | 6.7s | **9.2s** |
+| API calls | 17 paginated | **17 paginated** |
+| Rows (type × region) | 650 | **15,078** |
+| On-demand list prices | 40 calls | **1 sweep, 54s, 24,383 pairs** |
+
+The genuine constraint was rendering, not ingestion: 15,078 rows of server-rendered
+HTML is a ~36 MB document. That is solved where it lives — the browser renders the
+table from a compact embedded dataset — and the watchlist is now unbounded by
+default. `DEFAULT_INSTANCE_TYPES` survives as a ready-made short list for a fast
+local run.
+
+The cost of getting this wrong was concrete: a page offering `g5.xlarge` and
+`g5.12xlarge` but not `g5.2xlarge`, for a reason that had stopped being true.
 
 **Regions are discovered, not hardcoded.** `describe_regions` returns the 17 this
 account has enabled; the other 17 are opt-in and would raise `AuthFailure` on every

@@ -5,7 +5,7 @@
 Environment:
     SPOTFLOOR_DB              sqlite path      (default spotfloor.db)
     SPOTFLOOR_REGIONS         comma-separated  (default: every enabled region)
-    SPOTFLOOR_INSTANCE_TYPES  comma-separated  (default: the 40-type watchlist)
+    SPOTFLOOR_INSTANCE_TYPES  comma-separated  (default: every type EC2 offers)
     SPOTFLOOR_POLL_INTERVAL_S seconds          (default 300)
     SPOTFLOOR_HISTORY_DAYS    chart window     (default 7)
     SPOTFLOOR_BACKFILL_DAYS   initial history  (default 30)
@@ -92,8 +92,9 @@ def main() -> None:
     regions = ",".join(config.regions) if config.regions else "all enabled"
     print(f"spotfloor -> http://127.0.0.1:{port}")
     print(f"  db={config.db_path}  poll={config.poll_interval_s}s  regions={regions}")
-    print(f"  {len(config.instance_types)} instance types  "
-          f"chart window {config.history_days}d")
+    types = (f"{len(config.instance_types)} instance types"
+             if config.instance_types else "all instance types")
+    print(f"  {types}  chart window {config.history_days}d")
     if args.backfill:
         print(f"  backfilling {config.backfill_days}d of history first...\n")
         backfill(config)

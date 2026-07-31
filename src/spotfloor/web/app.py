@@ -6,6 +6,18 @@ keeps API quota tied to the poll schedule rather than to traffic, and means the
 table and the charts are two views of one set of stored facts rather than two
 independent fetches that can disagree.
 
+**The table is rendered by the browser, not by Jinja.** The scope is every instance
+type EC2 offers, which is ~15,000 (type, region) rows; server-rendering those is a
+~36 MB document and roughly a million DOM nodes, so the page ships a compact dataset
+(:func:`table_payload`) and paints a page of rows at a time. Filtering and sorting
+still run over every row -- only painting is capped, and the page says so rather than
+truncating quietly.
+
+That moves two things client-side that used to be assertable Python: the row markup
+and the sparkline. Both keep their rules, and the tests follow them there -- what the
+page *knows* is asserted against the payload, what it *does* against the rendering
+code.
+
 The template's job is to render :mod:`spotfloor.query` output faithfully. Four
 things it must not do, all of which a dashboard does by default:
 
@@ -21,9 +33,13 @@ things it must not do, all of which a dashboard does by default:
 **Why the page window is shorter than the stored window.** The store holds
 ``backfill_days`` (30 by default) because AWS serves ~89 days on demand and deep
 history is nearly free to acquire. The *page* charts ``history_days`` (7) because
-680 rows x 30 days is well over a million segments to load and bucket per render.
+15,000 rows x 30 days is tens of millions of segments to load and bucket per render.
 Deeper history stays available per instance type through
 ``/api/history/{instance_type}?days=N``, which filters to one series and is cheap.
+
+At full catalogue scope a 30-day backfill is ~7M segments and a multi-gigabyte
+database; 7 days is ~1.7M and matches what the page actually draws. Set
+``SPOTFLOOR_BACKFILL_DAYS`` deliberately rather than inheriting 30 by accident.
 """
 
 from __future__ import annotations
@@ -70,7 +86,13 @@ class WebConfig:
     db_path: str = "spotfloor.db"
     # None means "every region this account has enabled", discovered at runtime.
     regions: tuple[str, ...] | None = None
-    instance_types: tuple[str, ...] = DEFAULT_INSTANCE_TYPES
+    # None means "every instance type EC2 offers", discovered the same way. It is
+    # the default because the alternative -- a curated list -- is wrong the moment
+    # someone looks for a type nobody thought to curate, which is exactly how
+    # g5.2xlarge came to be missing from a page that showed g5.xlarge and
+    # g5.12xlarge. Narrow it with SPOTFLOOR_INSTANCE_TYPES when you want a small,
+    # fast local run; see DEFAULT_INSTANCE_TYPES for a ready-made short list.
+    instance_types: tuple[str, ...] | None = None
     poll_interval_s: int = 300
     # What the page charts. See the module docstring for why it is not backfill_days.
     history_days: int = 7
@@ -161,11 +183,22 @@ def build_providers(config: WebConfig) -> tuple[list[Provider], list[str]]:
 
 @dataclass(frozen=True, slots=True)
 class TableEntry:
-    """One region row plus its rendered history, ready for the template."""
+    """One region row plus its price history over the page window."""
 
     row: RegionRow
     series: list[FloorPoint]
-    spark: str
+
+    @property
+    def spark(self) -> str:
+        """This row's history as inline SVG.
+
+        A property rather than a stored field since the page went client-rendered:
+        building 15,078 sparklines to embed in HTML that no longer carries them cost
+        seconds per render and ~15 MB of strings for nothing. The API is kept because
+        the drawing is still a pure function worth asserting on, and callers outside
+        the page (tests, any consumer wanting server-rendered SVG) still want it.
+        """
+        return sparkline_svg([p.floor_usd_hr for p in self.series])
 
     @property
     def observed_buckets(self) -> int:
@@ -210,46 +243,150 @@ def build_entries(
             window,
             buckets=config.buckets,
         )
-        entries.append(
-            TableEntry(
-                row=row,
-                series=series,
-                spark=sparkline_svg([p.floor_usd_hr for p in series]),
-            )
-        )
+        entries.append(TableEntry(row=row, series=series))
     return entries
 
 
-def series_payload(
+def _rle(values: Sequence[float | None]) -> str:
+    """Run-length encode a bucketed price series into one short string.
+
+    Spot price history is a *change-log*: AWS emits a row when the price moves, so a
+    56-bucket series is typically a handful of long runs of one repeated number.
+    Writing them out individually is what made the payload unaffordable at full
+    catalogue size -- 15,078 rows x 56 buckets is 844k numbers.
+
+    Format: comma-separated tokens, each a run.
+
+    ==================  ===================================
+    ``0.0612``          one bucket at $0.0612
+    ``0.0612:12``       twelve consecutive buckets at $0.0612
+    ``:3``              three consecutive unobserved buckets
+    ``:1``              one unobserved bucket
+    ==================  ===================================
+
+    The count is omitted for a run of one because most runs *are* one: measured over
+    a real 7-day window, a fixed ``value:count`` shape cost 204 bytes per row against
+    109 for this one, and at full catalogue size that difference is ~1.4 MB of page.
+
+    **A gap always carries its count, even at length one.** Letting it degrade to an
+    empty token would make ``_rle([None])`` and ``_rle([])`` both the empty string,
+    and "one bucket we did not observe" is a different claim from "no window at all".
+
+    The gap survives the encoding as a gap. It is not zero and not the previous price
+    carried forward -- the same rule the sparkline and the chart both draw by.
+    """
+    parts: list[str] = []
+    run_value: float | None = None
+    run_length = 0
+
+    def flush() -> None:
+        if not run_length:
+            return
+        if run_value is None:
+            parts.append(f":{run_length}")
+        else:
+            head = f"{run_value:g}"
+            parts.append(head if run_length == 1 else f"{head}:{run_length}")
+
+    for value in values:
+        rounded = None if value is None else round(value, 6)
+        if run_length and rounded == run_value:
+            run_length += 1
+            continue
+        flush()
+        run_value, run_length = rounded, 1
+    flush()
+    return ",".join(parts)
+
+
+def table_payload(
     entries: Sequence[TableEntry], *, now: datetime, config: WebConfig
 ) -> dict[str, Any]:
-    """Every row's price history, compact enough to embed in the page.
+    """Every row the table can show, compact enough to hand a browser in one go.
 
-    The chart plots arbitrary combinations of (instance type, region), so the data
-    has to be present before the user picks -- fetching per selection would break
-    the static export, which has no server. Embedding it also means the chart works
-    offline once the page is loaded.
+    **The page stopped server-rendering rows because it had to.** One row is ~2.4 KiB
+    of HTML including its inline sparkline; at the full EC2 catalogue that is a 36 MB
+    document and roughly a million DOM nodes, which no browser renders usefully. So
+    the server ships data and the client renders the slice that is on screen.
 
-    Compact by construction: a shared time axis (``start`` + ``step_s``) instead of a
-    timestamp per point, and prices rounded to 6 significant digits. Emitting
-    ``{"at": iso, "price": x}`` per point would be roughly 6x the bytes for identical
-    pixels -- 646 series x 56 buckets is 36k points either way.
+    Compact by construction, in three ways that together turn ~40 MB into ~2 MB:
 
-    ``null`` means *not observed* and must be drawn as a break in the line. It is not
-    zero and not the previous price carried forward.
+    * **hardware specs are per *type*, not per row.** ``g5.2xlarge`` is 8 vCPU / 1
+      A10G in all 17 regions, so the spec is emitted once and referenced by index.
+    * **type, region and zone names are interned.** ``us-east-1a`` appears in
+      thousands of rows; here it appears once.
+    * **derived columns are not shipped at all.** AZ spread, savings and $/GPU are
+      arithmetic on numbers already present, so sending them would be sending the
+      same fact twice and inviting the two copies to disagree.
+
+    History rides along RLE-encoded (see :func:`_rle`) rather than as a separate
+    fetch, because the static snapshot has no server to fetch from and the chart must
+    work offline once loaded.
     """
-    step_s = int(timedelta(days=config.history_days).total_seconds() / config.buckets)
+    type_index: dict[str, int] = {}
+    specs: list[list[Any]] = []
+    region_index: dict[str, int] = {}
+    regions: list[str] = []
+    zone_index: dict[str, int] = {}
+    zones: list[str] = []
+
+    def intern_type(row: RegionRow) -> int:
+        if row.instance_type not in type_index:
+            type_index[row.instance_type] = len(specs)
+            specs.append(
+                [
+                    row.instance_type,
+                    row.instance_family,
+                    row.vcpus,
+                    row.memory_gib,
+                    row.gpu_model,
+                    row.gpu_count,
+                ]
+            )
+        return type_index[row.instance_type]
+
+    def intern(value: str | None, index: dict[str, int], pool: list[str]) -> int:
+        # -1, not 0, for absent: an on-demand row genuinely has no zone, and index 0
+        # is a real zone that would otherwise be named as its location.
+        if value is None:
+            return -1
+        if value not in index:
+            index[value] = len(pool)
+            pool.append(value)
+        return index[value]
+
+    rows: list[list[Any]] = []
+    for entry in entries:
+        row = entry.row
+        rows.append(
+            [
+                intern_type(row),
+                intern(row.region, region_index, regions),
+                round(row.cheapest_usd_hr, 6),
+                intern(row.cheapest_zone, zone_index, zones),
+                row.zone_count,
+                intern(row.dearest_zone, zone_index, zones),
+                round(row.dearest_usd_hr, 6),
+                None if row.on_demand_usd_hr is None else round(row.on_demand_usd_hr, 6),
+                row.price_changes,
+                None
+                if row.coefficient_of_variation is None
+                else round(row.coefficient_of_variation, 4),
+                _rle([p.floor_usd_hr for p in entry.series]),
+                str(row.price_kind),
+            ]
+        )
+
     return {
         "start": (now - timedelta(days=config.history_days)).isoformat(),
-        "step_s": step_s,
+        "step_s": int(
+            timedelta(days=config.history_days).total_seconds() / config.buckets
+        ),
         "buckets": config.buckets,
-        "series": {
-            f"{e.row.instance_type}|{e.row.region}": [
-                None if p.floor_usd_hr is None else round(p.floor_usd_hr, 6)
-                for p in e.series
-            ]
-            for e in entries
-        },
+        "specs": specs,
+        "regions": regions,
+        "zones": zones,
+        "rows": rows,
     }
 
 
@@ -444,12 +581,16 @@ def create_app(
 
             now = datetime.now(UTC)
             observed = build_entries(request.app.state.store, config, now=now)
+            # An all-types watchlist has no list to union in or to echo back: what
+            # is stored *is* the watchlist, and `sorted(None)` would take the picker
+            # down with a TypeError on the one path that exists to keep it alive.
+            watchlist = set(config.instance_types or ())
             payload: dict[str, Any] = {
                 "instance_types": sorted(
-                    {e.row.instance_type for e in observed} | set(config.instance_types)
+                    {e.row.instance_type for e in observed} | watchlist
                 ),
                 "regions": sorted({e.row.region for e in observed}),
-                "watchlist": sorted(config.instance_types),
+                "watchlist": sorted(watchlist),
                 "complete": False,
                 "note": "",
             }
@@ -533,7 +674,11 @@ def create_app(
                             (datetime.now(UTC) - started).total_seconds(), 2
                         ),
                         "regions": list(scoped.regions) if scoped.regions else "all enabled",
-                        "instance_types": len(scoped.instance_types),
+                        "instance_types": (
+                            len(scoped.instance_types)
+                            if scoped.instance_types is not None
+                            else "all"
+                        ),
                         "fetched": report.fetched,
                         "inserted": report.write.inserted,
                         "extended": report.write.extended,
@@ -571,11 +716,18 @@ def create_app(
                     NO_CREDENTIALS_NOTE in request.app.state.notes
                     or not getattr(request.app.state, "aws_ready", True)
                 ),
-                "regions_seen": sorted({e.row.region for e in entries}),
-                "families_seen": sorted({e.row.instance_family for e in entries}),
-                "types_seen": sorted({e.row.instance_type for e in entries}),
-                "chart_data": json.dumps(
-                    series_payload(entries, now=now, config=config), separators=(",", ":")
+                "row_count": len(entries),
+                "region_count": len({e.row.region for e in entries}),
+                "type_count": len({e.row.instance_type for e in entries}),
+                "gpu_type_count": len(
+                    {e.row.instance_type for e in entries if e.row.gpu_count}
+                ),
+                # One payload, not a list of rows plus a separate series blob: the
+                # table and the chart are two views of the same facts, and shipping
+                # them separately is how they drift apart.
+                "table_data": json.dumps(
+                    table_payload(entries, now=now, config=config),
+                    separators=(",", ":"),
                 ),
                 "snapshot": snapshot,
             },

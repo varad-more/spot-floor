@@ -1,6 +1,6 @@
 # spotfloor — design notes
 
-Why the thing is built the way it is. The [README](../README.md) covers how to run it; this covers the decisions and the measurements behind them.
+Why the thing is built the way it is. The [README](../README.md) covers how to run it; this is the reasoning, and the measurements behind it.
 
 ---
 
@@ -16,9 +16,10 @@ do. Here is what it hides, measured live and verified against the raw AWS API:
 | `p4d.24xlarge` | eu-west-2 | $7.0745 (2b) | $28.5488 (2a) | +303.5% |
 | `p5.48xlarge` | ap-south-1 | $6.6048 (1c) | $20.2923 (1b) | +207.2% |
 
-A 4.5× price difference **inside one region**. A regional average would be
-actively misleading, and a bare regional minimum would be a number you cannot act
-on. So every row names its zone and states the spread it hid.
+A 4.5× price difference inside one region. A regional average would mislead you
+outright. A bare regional minimum wouldn't — but you can't act on it without
+knowing which zone produced it. So every row names its zone and states the spread
+it hid.
 
 The cross-region spread is just as real: `p5.48xlarge` (8×H100) is $6.60/hr in
 ap-south-1 and $20.76/hr in us-east-1 — the same hardware, 3× the price.
@@ -28,16 +29,15 @@ ap-south-1 and $20.76/hr in us-east-1 — the same hardware, 3× the price.
 ## What this tool does not know
 
 **AWS does not publish spot availability.** Every availability cell reads
-`unknown`, deliberately, as a word rather than a blank — a blank cell reads as
-"none available", which is a claim we have not earned.
+`unknown` — the word, spelled out, because a blank cell reads as "none available"
+and that is a claim we have not earned.
 
 The nearest thing AWS offers is the Spot Placement Score API, and it does not
 return a market fact: AWS computes the score *against the calling account's* quotas
 and usage history. Measured live from this repo's account, `p5.48xlarge` scored
-**1/10 in every availability zone**. That number describes our account, not your
-odds. So a score fetched with the app's credentials is not merely imprecise, it is
-**about the wrong account** — and publishing it as a market signal would be
-fabrication.
+1/10 in every availability zone. That number describes our account. A score
+fetched with the app's credentials is **about the wrong account entirely**, and
+publishing it as a market signal would be fabrication.
 
 spotfloor therefore reports `unknown` and **does not call that API at all** under
 app credentials. Enforced by a test
@@ -52,7 +52,8 @@ credentials (`CredsOwner.USER`), which is off by default.
 The page shows how many times each price moved in the window, plus a scale-free
 coefficient of variation. That is a real fact from AWS's published history and a
 fair hint that a zone is contended — `m5.large` in us-west-2 moved 74 times in
-seven days. It is **not** a fulfillment probability and is never presented as one.
+seven days. It is not a fulfillment probability, and nothing on the page says
+otherwise.
 
 ---
 
@@ -63,27 +64,26 @@ precisely *when a price changes*, and retains ~89 days (measured: 89 days,
 ~2,000 rows per instance-type/region, 2–3 API calls, under a second). Two
 consequences:
 
-* charts are full-depth on a cold start, because deep history is one call away
-  rather than something a poller must slowly accumulate; and
+* charts are full-depth on a cold start, because deep history is one call away —
+  no poller has to accumulate it slowly;
 * those rows **are** storage segments — quote N's timestamp opens a segment and
-  quote N+1's closes it — so the backfill is exact rather than a reconstruction.
-  Gate 1 proves it: 466 adjacent segment pairs, every one meeting exactly.
+  quote N+1's closes it — so the backfill is exact. Gate 1 proves it: 466
+  adjacent segment pairs, every one meeting exactly.
 
 That is why there are two write paths. `write(now=…)` is told "this is the state
 now" and infers boundaries; `backfill(segments)` is handed intervals already known.
 Routing history through `write` would stamp 90 days of dated quotes with the wall
 clock and collapse them into one segment.
 
-**The database is a rebuildable cache, not a system of record.** Every row is
-re-derivable from one API call, so a schema change drops and rebuilds rather than
-migrating — a half-migrated cache is worse than an empty one, because it serves
-rows the new code misreads.
+**The database is a cache, and every row in it is re-derivable from one API
+call.** So a schema change drops and rebuilds. Migrating would risk leaving it
+half-converted, which is worse than empty — it serves rows the new code misreads.
 
 **Region and zone are separate fields.** A region comparator cannot key on a field
 that secretly holds an AZ. Rolling up is a read-time decision, and the roll-up
 always names the zone that produced the number.
 
-**`instance_type` is the spine, not GPU SKU.** Only 69 of us-east-1's 1,354
+**`instance_type` is the spine.** Only 69 of us-east-1's 1,354
 instance types carry a GPU. Within one provider `m5.large` is already canonical —
 it is the same 2 vCPU / 8 GiB machine in every region — so prices are directly
 comparable with no normalization. Cross-provider SKU mapping (`gpu.py`) is
@@ -113,16 +113,16 @@ local run.
 The cost of getting this wrong was concrete: a page offering `g5.xlarge` and
 `g5.12xlarge` but not `g5.2xlarge`, for a reason that had stopped being true.
 
-**Regions are discovered, not hardcoded.** `describe_regions` returns the 17 this
+**Regions are discovered at startup.** `describe_regions` returns the 17 this
 account has enabled; the other 17 are opt-in and would raise `AuthFailure` on every
 call. A comparator that lists regions it cannot price is worse than one that admits
 its scope — and any region that *does* fail is named on the page, because an absent
 region is indistinguishable from a region with no capacity.
 
-**Storage is segments, not points.** A row says "this exact (price, availability)
-held from `first_seen` to `last_seen`", so the table grows with *change*, not with
-time. Change detection hashes integer-quantized values — comparing JSON floats with
-`=` would open a new row on every poll and silently destroy dedup.
+**Storage is intervals.** A row says "this exact (price, availability) held from
+`first_seen` to `last_seen`", so the table grows only when something changes.
+Change detection hashes integer-quantized values — comparing JSON floats with `=`
+would open a new row on every poll and silently destroy dedup.
 
 **Absence is never rendered as a value.** An unobserved bucket is `None`: not zero,
 not the previous price carried forward. Interpolating across a gap asserts an
@@ -134,15 +134,15 @@ observation we never made.
 
 A read-only page over the store: one row per (instance type, region), the cheapest
 zone named, the intra-region spread, hardware spec, volatility, and a 7-day
-sparkline. Filtering, search and column sort run **client-side** over rows already
-in the document — so "pick what you want to see" works on a static host with no
+sparkline. Filtering, search and column sort run client-side over rows already in
+the document — so "pick what you want to see" works on a static host with no
 server, no framework and no CDN.
 
 **A page load never fetches from AWS.** It renders what the poller and backfill
-already stored, so API quota is tied to the schedule rather than to traffic, and
-the table and charts are two views of one set of stored facts instead of two
-fetches that can disagree. Enforced by a test that wires in a provider which raises
-if called.
+already stored, so API quota is tied to the schedule rather than to traffic. The
+table and charts become two views of one set of stored facts, instead of two
+fetches that can disagree. Enforced by a test that wires in a provider which
+raises if called.
 
 ```
 GET /                           the page
@@ -175,8 +175,8 @@ The renderer drives the real app over ASGI rather than re-rendering, so the stat
 files are literally the responses the live app gives. There is no second rendering
 path to drift, and the first thing to drift would be a caveat.
 
-Snapshot mode is explicit, not inferred: the page drops its auto-refresh and carries
-a banner naming when the prices were read. **A stale page that looks live is the same
+Snapshot mode is explicit: the page drops its auto-refresh and carries a banner
+naming when the prices were read. **A stale page that looks live is the same
 unearned claim as an availability we cannot observe**, so tests assert both that a
 snapshot says it is one and that the live page does not.
 
@@ -265,7 +265,7 @@ Measured over 15,277 (type, region) pairs, 2026-07-30: minimum ratio **0.099494*
 0.10 histogram bucket holds 836 rows against 130-250 in each neighbour — a spike, not
 a tail. `sa-east-1` runs 20% of its rows at the floor.
 
-**The tolerance is sized from the data, not guessed.** Prices are quantized to
+**The tolerance is sized from the data.** Prices are quantized to
 micro-dollars, so an exactly-floored row divides to a hair either side of 0.1. The
 first attempt (±0.0005) reported the real minimum, 0.099494, as having *broken
 through* the floor — undercutting the section's own claim. ±0.001 absorbs the
@@ -284,6 +284,6 @@ Two consequences elsewhere:
 
 This is a 12-column table of 15,000 rows beside a multi-series time chart. There is
 no honest phone layout for it: every responsive strategy for a table this wide ends
-in hiding columns, and the columns are the point -- the zone a price came from, the
+in hiding columns, and the columns are the point — the zone a price came from, the
 spread the regional number hid. So the layout spends the width it is given (1760px)
 rather than reserving room for a viewport it will never be used in.

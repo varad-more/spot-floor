@@ -456,8 +456,8 @@
       <h1>spotfloor</h1>
       <p class="lede">
         You picked the GPU. <strong>This tells you where to rent it.</strong> Spot and
-        on-demand prices for <em>every</em> EC2 instance type, compared
-        <em>across every region</em>, with 7-day history — and
+        on-demand prices for every EC2 instance type, compared across every region,
+        with 7-day history — and
         every price names the availability zone it came from, because you launch into a
         zone, not into a region.
       </p>
@@ -465,7 +465,7 @@
         <li><strong>One row = one instance type in one region</strong>, priced at its
           cheapest zone. <em>AZ spread</em> is how much that regional number hid.</li>
         <li><strong>Compare the rows, not the columns.</strong> The same H100 in two
-          regions costs different amounts; that gap is the thing worth acting on.</li>
+          regions costs different amounts; that gap is the money.</li>
         <li><strong>Tick rows to chart them</strong>, <strong>⇄</strong> to plot one type
           across every region.</li>
       </ol>
@@ -518,7 +518,7 @@
       <p>It is not a rule AWS publishes. It is one you can <em>see</em>, which is why
       the numbers beside this paragraph are measured on the
       15,277 rows currently in the table rather than
-      quoted from anywhere:</p>
+      quoted:</p>
 
       <ul class="floorfacts">
         <li><strong>0.0995×</strong> is the cheapest spot
@@ -533,7 +533,7 @@
           a band one order of magnitude wide.</li>
       </ul>
 
-      <p class="floorso"><strong>Why it matters when you are picking a GPU.</strong>
+      <p class="floorso"><strong>What that means when you are picking.</strong>
       A row at the floor is at its structural minimum: waiting will not make it
       cheaper, and the only way to pay less is to launch the same hardware somewhere
       else. A row well above the floor has room to fall — and room to rise. Sort by
@@ -605,8 +605,8 @@
     than inventing a number. <strong>This is a price comparator; it does not claim to
     know what you can get.</strong></p>
     <p><strong>“Price moves” is not availability either.</strong> It counts how many
-    times the price changed in the window — a real fact from AWS's published history and
-    a fair hint that a zone is contended. It is not a fulfillment probability.</p>
+    times the price changed in the window — a real fact from AWS's published history,
+    and a fair hint that a zone is contended. That hint is where it ends.</p>
   </details>
 
   
@@ -669,15 +669,15 @@
           <th class="num sortable" data-key="ondemand" style="width:108px"><span class="cell">On-demand<span
             class="q" title="The published on-demand list price for this instance type in this region, from the AWS Price List API. AWS charges one on-demand rate per region — unlike spot, it does not vary by zone. A dash means it was not observed: either the IAM policy lacks pricing:GetProducts, or AWS quotes this region in a currency other than USD.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="saves" style="width:100px"><span class="cell">Saves<span
-            class="q" title="How much cheaper the cheapest zone is than paying on-demand — measured against the zone you would actually launch into, not a regional average. Negative means spot is currently ABOVE list price, which happens under contention and is a real market state. A dash means no on-demand price was observed; it does not mean spot saves you nothing.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="How much cheaper the cheapest zone is than paying on-demand — measured against the zone you would actually launch into, not a regional average. A negative value means spot is above list price; in practice that is float noise, since spot is capped at the on-demand rate. A dash means no on-demand price was observed; it does not mean spot saves you nothing.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="spread" style="width:104px"><span class="cell">AZ spread<span
             class="q" title="How much dearer the priciest zone in this region is than the cheapest one. A big spread means a regional average would mislead you.">?</span> <span class="arrow">↕</span></span></th>
           <th style="width:158px"><span class="cell">Spec<span
             class="q" title="vCPUs, memory, and GPUs. Hardware does not vary by region — only price does.">?</span></span></th>
           <th class="num sortable" data-key="pergpu" style="width:112px"><span class="cell">$ per GPU<span
-            class="q" title="Price per GPU per hour: the $/hr above divided by the number of GPUs. Lets you compare accelerator cost across instance sizes — a 8-GPU box at $20/hr is cheaper per GPU than a 1-GPU box at $3/hr. Dash means the instance type has no GPU.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="Price per GPU per hour: the $/hr above divided by the number of GPUs. Lets you compare accelerator cost across instance sizes — an 8-GPU box at $20/hr is cheaper per GPU than a 1-GPU box at $3/hr. Dash means the instance type has no GPU.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="moves" style="width:134px"><span class="cell">Price moves<span
-            class="q" title="How many times AWS changed this price in the window, with its coefficient of variation. A hint that a zone is contended — NOT an availability or fulfillment signal.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="How many times AWS changed this price in the window, with its coefficient of variation. A hint that a zone is contended, and not an availability or fulfillment signal.">?</span> <span class="arrow">↕</span></span></th>
           <th style="width:186px"><span class="cell">Last 7d<span
             class="q" title="Cheapest-zone price over the window. A break in the line is a bucket with no observation, never a zero.">?</span></span></th>
         </tr>

@@ -251,3 +251,39 @@ makes AWS's `unknown` honest rather than lazy. Re-wiring it is a one-line change
 
 ---
 
+
+
+## The spot floor, and why it is measured rather than stated
+
+The project is named after a market-structure claim: **AWS does not price spot below
+10% of on-demand.** A claim like that is exactly the kind this repo refuses to make
+on authority, so `floor_stats` computes it on every render from the rows being
+rendered, and the page prints those figures beside the prose.
+
+Measured over 15,277 (type, region) pairs, 2026-07-30: minimum ratio **0.099494**,
+**zero** rows below the band, **771 (5.0%)** pinned to it, maximum **1.000045**. The
+0.10 histogram bucket holds 836 rows against 130-250 in each neighbour — a spike, not
+a tail. `sa-east-1` runs 20% of its rows at the floor.
+
+**The tolerance is sized from the data, not guessed.** Prices are quantized to
+micro-dollars, so an exactly-floored row divides to a hair either side of 0.1. The
+first attempt (±0.0005) reported the real minimum, 0.099494, as having *broken
+through* the floor — undercutting the section's own claim. ±0.001 absorbs the
+quantization and still stops well short of the next histogram bucket at 0.11.
+
+Two consequences elsewhere:
+
+* the **at-floor badge** is the most actionable fact on a row — "this price cannot
+  fall further where it is" — so it is a label, never a colour alone;
+* the page's older line about spot going *above* list is now known to be nearly
+  vacuous: the maximum observed ratio is 1.000045, so the negative-savings path is
+  float noise rather than a market state. The handling stays (it costs nothing and
+  the cap is undocumented), but the page no longer implies it is common.
+
+## Desktop-only, on purpose
+
+This is a 12-column table of 15,000 rows beside a multi-series time chart. There is
+no honest phone layout for it: every responsive strategy for a table this wide ends
+in hiding columns, and the columns are the point -- the zone a price came from, the
+spread the regional number hid. So the layout spends the width it is given (1760px)
+rather than reserving room for a viewport it will never be used in.

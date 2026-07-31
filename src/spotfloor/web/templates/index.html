@@ -60,7 +60,14 @@
     font: 15px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Inter, system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
-  .wrap { max-width: 1400px; margin: 0 auto; padding: 2rem 1.25rem 3rem; }
+  /* **Built for a desktop browser, deliberately.** This is a 12-column table of
+     15,000 rows next to a multi-series time chart; there is no honest phone layout
+     for it, and pretending otherwise would mean hiding columns — which on this page
+     means hiding the zone a price came from, or the spread it hides. So the layout
+     spends the width it is given rather than reserving room for a viewport it will
+     never see. 1760px fits the full table with no horizontal scroll on a 1080p
+     screen and still leaves margins on a 1440p one. */
+  .wrap { max-width: 1760px; margin: 0 auto; padding: 2rem 2rem 3rem; }
   h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
   .head { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; }
   .lede { margin: .35rem 0 0; color: var(--muted); max-width: 68ch; font-size: .95rem; }
@@ -322,6 +329,81 @@
     padding-left: .6rem; border-left: 2px solid var(--line);
   }
   .sibling a { color: var(--accent); font-weight: 600; }
+
+  /* The spot floor explainer. Prose and evidence side by side on purpose: the claim
+     is unusual enough that it should not be readable without the numbers that
+     support it. Two columns, because the page is desktop-only and has the room. */
+  .floorcard {
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px; gap: 2rem;
+    padding: 1.4rem 1.5rem; margin-bottom: 1rem;
+  }
+  .floortext h2 { margin: 0 0 .5rem; font-size: 1.05rem; letter-spacing: -0.01em; }
+  .floortext p { margin: 0 0 .6rem; font-size: .88rem; max-width: 78ch; color: var(--muted); }
+  .floortext strong { color: var(--ink); }
+  .floortext em { color: var(--ink); font-style: normal; font-weight: 600; }
+  .floorfacts { margin: .1rem 0 .7rem; padding-left: 1.1rem; font-size: .86rem;
+    color: var(--muted); }
+  .floorfacts li { margin-bottom: .22rem; }
+  .floorfacts strong { font-variant-numeric: tabular-nums; }
+  .floorso { border-left: 2px solid var(--accent); padding-left: .7rem; }
+
+  .floorviz { display: flex; flex-direction: column; gap: .8rem; }
+  .floormeter { display: flex; align-items: flex-end; gap: .7rem; }
+  /* A single proportion, drawn once. It is one number, so it gets one bar rather
+     than a chart — a pie or a donut would be three chart elements saying it. */
+  .floorbar {
+    width: 46px; height: 84px; border-radius: 4px; background: var(--grid);
+    display: flex; align-items: flex-end; overflow: hidden;
+    border: 1px solid var(--line);
+  }
+  .floorbar span { display: block; width: 100%; background: var(--accent); }
+  .floorlabel strong { display: block; font-size: 1.5rem; letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums; }
+  .floorlabel span { font-size: .78rem; color: var(--muted); }
+  .floorregions { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  .floorregions caption {
+    text-align: left; font-size: .68rem; text-transform: uppercase;
+    letter-spacing: .06em; color: var(--muted); font-weight: 700;
+    padding-bottom: .3rem;
+  }
+  .floorregions td { padding: .18rem 0; border-bottom: 1px solid var(--line); }
+  .floorregions td.num { text-align: right; font-variant-numeric: tabular-nums;
+    font-weight: 600; }
+  .floorregions td.dim { text-align: right; color: var(--muted); width: 4.5rem; }
+  .floorex { margin: 0; font-size: .78rem; color: var(--muted); }
+  .floorex strong { color: var(--ink); }
+
+  /* A row pinned to the floor. Not a colour alone: it carries a label, because
+     "this price cannot go lower" is the single most actionable fact on the row. */
+  /* Scan progress. The bar is indeterminate on purpose: the server reports nothing
+     until the whole tick finishes, so a percentage would be invented. It animates to
+     show liveness and the elapsed counter carries the real information. */
+  .scanbody { padding: .3rem 0 .9rem; }
+  .scanbar {
+    height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden;
+    margin-bottom: .8rem;
+  }
+  .scanbar span {
+    display: block; height: 100%; width: 34%; border-radius: 3px;
+    background: var(--accent); animation: scanslide 1.25s ease-in-out infinite;
+  }
+  @keyframes scanslide {
+    0% { margin-left: -34%; } 100% { margin-left: 100%; }
+  }
+  .scanbar.done span { animation: none; width: 100%; margin-left: 0; }
+  .scanbar.failed span { animation: none; width: 100%; margin-left: 0;
+    background: var(--bad-fg); }
+  .scanstate { margin: 0 0 .25rem; font-size: .9rem; color: var(--ink); }
+  .scanelapsed { margin: 0; font-size: .8rem; color: var(--muted);
+    font-variant-numeric: tabular-nums; }
+  @media (prefers-reduced-motion: reduce) { .scanbar span { animation: none; } }
+
+  .atfloor {
+    display: inline-block; font-size: .62rem; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; padding: .05rem .3rem; border-radius: 3px;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent); margin-left: .3rem; vertical-align: 1px;
+  }
   /* The truncation notice. Deliberately inside the table card and always visible
      when it applies -- a "showing 300 of 15,078" that you have to scroll to find
      is a table that looks complete and is not. */
@@ -423,6 +505,76 @@
   </div>
   {% endif %}
 
+  {% if floor.priced %}
+  <section class="card floorcard" id="the-floor">
+    <div class="floortext">
+      <h2>Why “spot floor”?</h2>
+      <p><strong>AWS will not sell you a spot instance for less than a tenth of its
+      on-demand price.</strong> Bid theory says a spot price should fall until demand
+      meets supply. It doesn't. It falls to
+      <strong>{{ floor_ratio_pct }}% of list</strong> and stops dead — no matter how
+      idle the capacity, how unfashionable the instance, or how empty the region.
+      That wall is the spot floor, and it is what this tool is named after.</p>
+
+      <p>It is not a rule AWS publishes. It is one you can <em>see</em>, which is why
+      the numbers beside this paragraph are measured on the
+      {{ '{:,}'.format(floor.priced) }} rows currently in the table rather than
+      quoted from anywhere:</p>
+
+      <ul class="floorfacts">
+        <li><strong>{{ '%.4f' % floor.min_ratio }}×</strong> is the cheapest spot
+          price anyone here gets, as a fraction of on-demand — against a theoretical
+          floor of {{ '%.2f' % 0.1 }}×.
+          {% if floor.below_floor %}Only {{ floor.below_floor }} rows sit below it, by
+          less than a hundredth of a cent — quantization, not a discount.
+          {% else %}Not one row of {{ '{:,}'.format(floor.priced) }} goes below it.{% endif %}</li>
+        <li><strong>{{ '{:,}'.format(floor.at_floor) }} rows
+          ({{ '%.1f' % floor.at_floor_pct }}%)</strong> are pinned exactly to it —
+          priced at the floor because there is nowhere further down to go.</li>
+        <li><strong>{{ '%.4f' % floor.max_ratio }}×</strong> is the most anyone pays.
+          Spot is capped at the on-demand price too, so the whole market lives inside
+          a band one order of magnitude wide.</li>
+      </ul>
+
+      <p class="floorso"><strong>Why it matters when you are picking a GPU.</strong>
+      A row at the floor is at its structural minimum: waiting will not make it
+      cheaper, and the only way to pay less is to launch the same hardware somewhere
+      else. A row well above the floor has room to fall — and room to rise. Sort by
+      <em>Saves</em> to see which is which.</p>
+    </div>
+
+    <div class="floorviz">
+      <div class="floormeter" role="img"
+        aria-label="{{ '{:,}'.format(floor.at_floor) }} of {{ '{:,}'.format(floor.priced) }} rows are priced at the floor">
+        <div class="floorbar"><span style="height: {{ '%.1f' % floor.at_floor_pct }}%"></span></div>
+        <div class="floorlabel">
+          <strong>{{ '%.1f' % floor.at_floor_pct }}%</strong>
+          <span>of rows sit on the floor</span>
+        </div>
+      </div>
+      {% if floor.regions %}
+      <table class="floorregions">
+        <caption>Where the floor binds hardest</caption>
+        {% for r in floor.regions %}
+        <tr>
+          <td>{{ r.region }}</td>
+          <td class="num">{{ '%.0f' % r.pct }}%</td>
+          <td class="dim">{{ r.at_floor }}/{{ r.of }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+      {% if floor.example %}
+      <p class="floorex">The floor applies at every price point — even
+        <strong>{{ floor.example.instance_type }}</strong> in
+        {{ floor.example.region }}:
+        <strong>${{ '%.2f' % floor.example.cheapest_usd_hr }}</strong>/hr against
+        ${{ '%.2f' % floor.example.on_demand_usd_hr }} list.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
   <details class="callout" id="why-unknown">
     <summary>Why availability is <code>unknown</code>, and what “price moves” measures</summary>
     <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
@@ -458,6 +610,9 @@
       <span class="ms-label">&nbsp;</span>
       <div class="toggles">
         <label class="check"><input type="checkbox" id="gpuonly"> GPU only</label>
+        <label class="check" title="Only rows priced at the spot floor — 10% of
+          on-demand, the lowest AWS will go. These cannot get cheaper where they
+          are."><input type="checkbox" id="flooronly"> At floor</label>
         {% if not snapshot %}
         <button type="button" class="btn primary" id="scan"
           title="Choose exactly which instance types and regions to fetch">Scan…</button>
@@ -562,6 +717,9 @@
     <div class="pickfoot">
       <span class="estimate" id="pickest"></span>
       <span class="modalacts">
+        <button type="button" class="btn" id="pickclear"
+          title="Empty both boxes. Note that an empty box means every value in it, so
+            this widens the scan to everything rather than narrowing it.">Unselect all</button>
         <button type="button" class="btn" id="pickvisible"
           title="Fill both boxes from the filters currently applied to the table">Use current filters</button>
         <button type="button" class="btn primary" id="pickgo">Scan</button>
@@ -569,6 +727,29 @@
     </div>
     <p class="modalfoot">Describe calls are free — narrowing saves wall-clock time and
       per-region rate quota, not money.</p>
+  </dialog>
+
+  {# Progress, as a modal. A scan at full scope runs about a minute, and the thin
+     status line it used to get was easy to miss -- which makes a working scan
+     indistinguishable from a dead button. #}
+  <dialog class="modal narrow" id="scanning" aria-labelledby="scantitle">
+    <div class="modalhead">
+      <h2 id="scantitle">Scanning AWS<span class="sub" id="scanscope"></span></h2>
+    </div>
+    <div class="scanbody">
+      <div class="scanbar" id="scanbar"><span></span></div>
+      <p class="scanstate" id="scanstate">Starting…</p>
+      <p class="scanelapsed"><span id="scanelapsed">0.0</span>s elapsed<span
+        id="scaneta"></span></p>
+    </div>
+    <div class="pickfoot">
+      <span class="estimate" id="scannote">Describe calls are free. Nothing outside
+        this scope is touched.</span>
+      <span class="modalacts">
+        <button type="button" class="btn" id="scanhide">Run in background</button>
+        <button type="button" class="btn primary" id="scandone" hidden>Close</button>
+      </span>
+    </div>
   </dialog>
   {% endif %}
 
@@ -754,6 +935,11 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       spread: price > 0 ? (dearest / price - 1) * 100 : 0,
       ondemand: onDemand,
       saves: (onDemand && onDemand > 0) ? (1 - price / onDemand) * 100 : null,
+      // Pinned to the structural minimum: AWS does not sell spot below a tenth of
+      // list, so this price has nowhere left to fall. Same tolerance as the
+      // server-side `floor_stats`, for the same reason -- prices are quantized to
+      // micro-dollars and land a hair either side of 0.1 after dividing.
+      atFloor: (onDemand && onDemand > 0) && (price / onDemand) <= 0.101,
       pergpu: gpuCount ? price / gpuCount : null,
       moves: r[8], cv: r[9],
       rle: r[10], kind: r[11]
@@ -804,6 +990,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   var legendEl = document.getElementById('legend');
   var tip = document.getElementById('tip');
   var gpuonly = document.getElementById('gpuonly');
+  var flooronly = document.getElementById('flooronly');
   var norows = document.getElementById('norows');
   var zoom = document.getElementById('zoom');
   var zoomPlot = document.getElementById('zoomplot');
@@ -1150,7 +1337,11 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
           + ' data error.">' + saves.toFixed(0) + '%</span>'
         : '<span class="' + (saves >= 70 ? 'saves-hi' : '') + '" title="'
           + money(row.price) + ' in ' + esc(row.zone || row.region) + ' vs '
-          + money(row.ondemand) + ' on-demand">' + saves.toFixed(0) + '%</span>')
+          + money(row.ondemand) + ' on-demand">' + saves.toFixed(0) + '%</span>'
+          + (row.atFloor ? '<span class="atfloor" title="Pinned to the spot floor:'
+            + ' AWS does not price spot below 10% of on-demand, so this price has'
+            + ' nowhere further to fall. Waiting will not improve it — only'
+            + ' launching the same hardware in another region will.">floor</span>' : ''))
       + '</td>');
 
     cells.push('<td class="num">' + (row.zoneCount < 2
@@ -1217,7 +1408,8 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     view = rows.filter(function (row) {
       return (!selectedTypes.size || selectedTypes.has(row.type))
           && (!selectedRegions.size || selectedRegions.has(row.region))
-          && (!gpuonly.checked || row.gpu === 1);
+          && (!gpuonly.checked || row.gpu === 1)
+          && (!flooronly.checked || row.atFloor);
     });
     // A narrowed filter that still showed page 7 of the old result would look empty.
     shownLimit = PAGE;
@@ -1743,10 +1935,12 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   var regionMS = multiselect('ms-region', REGION_NAMES.slice().sort(),
     selectedRegions, applyFilters, REGION_GROUPING);
   gpuonly.addEventListener('change', applyFilters);
+  flooronly.addEventListener('change', applyFilters);
 
   document.getElementById('clear').addEventListener('click', function () {
     selectedTypes.clear(); selectedRegions.clear();
     gpuonly.checked = false;
+    flooronly.checked = false;
     plotted = []; hidden.clear();
     typeMS.refresh(); regionMS.refresh();
     applyFilters(); syncBoxes(); drawChart();
@@ -1963,18 +2157,81 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     paintEstimate();
   });
 
+  // Empties both boxes. Worth being blunt in the hint about what that means here:
+  // an empty box is "every value in it", so unselecting all *widens* the scan to
+  // the whole catalogue rather than clearing it to nothing.
+  document.getElementById('pickclear').addEventListener('click', function () {
+    pickTypes.clear();
+    pickRegions.clear();
+    msPickType.refresh();
+    msPickRegion.refresh();
+    paintEstimate();
+  });
+
   document.getElementById('pickgo').addEventListener('click', function () {
     // An empty box means "all of them" -- the same convention the server already
     // uses, where an empty scope falls back to the configured watchlist.
     var types = pickTypes.size ? Array.from(pickTypes) : typeOptions.slice();
     var regions = pickRegions.size ? Array.from(pickRegions) : regionOptions.slice();
     picker.close();
-    runScan(types, regions, scan, 'Scanning…');
+    runScan(types, regions, scan, 'Scanning…', true);
   });
+
+  // ------------------------------------------------------------ scan progress
+  // A scan at full scope runs about a minute. The old signal was one line of text
+  // under the toolbar, which is easy to miss and leaves a working scan looking
+  // identical to a dead button -- so progress gets a dialog of its own.
+  var scanDialog = document.getElementById('scanning');
+  var scanScope = document.getElementById('scanscope');
+  var scanState = document.getElementById('scanstate');
+  var scanBar = document.getElementById('scanbar');
+  var scanElapsed = document.getElementById('scanelapsed');
+  var scanEta = document.getElementById('scaneta');
+  var scanDone = document.getElementById('scandone');
+  var scanHide = document.getElementById('scanhide');
+  var scanTimer = null;
+
+  // Dismissing the dialog does not cancel anything -- the request is already in
+  // flight and there is no cancel API -- so the button says "run in background"
+  // rather than "cancel", and the status line under the toolbar keeps reporting.
+  scanHide.addEventListener('click', function () { scanDialog.close(); });
+  scanDone.addEventListener('click', function () { scanDialog.close(); });
+
+  function scanProgressOpen(types, regions) {
+    scanScope.textContent = plural(types.length, 'instance type') + ' across '
+      + plural(regions.length, 'region');
+    scanState.textContent = 'Querying AWS…';
+    scanBar.className = 'scanbar';
+    scanDone.hidden = true;
+    scanHide.hidden = false;
+    var seconds = Math.round(estimateSeconds(types.length, regions.length));
+    scanEta.textContent = ' · usually about ' + seconds + 's';
+
+    var started = Date.now();
+    scanElapsed.textContent = '0.0';
+    clearInterval(scanTimer);
+    scanTimer = setInterval(function () {
+      scanElapsed.textContent = ((Date.now() - started) / 1000).toFixed(1);
+    }, 100);
+
+    if (!scanDialog.open) { scanDialog.showModal(); }
+  }
+
+  function scanProgressEnd(message, failed) {
+    clearInterval(scanTimer);
+    scanBar.className = 'scanbar ' + (failed ? 'failed' : 'done');
+    scanState.textContent = message;
+    scanEta.textContent = '';
+    scanHide.hidden = true;
+    scanDone.hidden = false;
+  }
 
   // One request path for both entry points. `btn` is whichever control was pressed;
   // it goes disabled for the round trip so a second click cannot race the first.
-  function runScan(types, regions, btn, busyLabel) {
+  // `progress` opens the dialog -- true for a deliberate scan from the picker,
+  // false for a single row's refetch, which is over in ~3s and already shows its
+  // own spinner on the button you just pressed.
+  function runScan(types, regions, btn, busyLabel, progress) {
     if (scanning) { say('A scan is already running.', true); return; }
     if (!types.length) { say('Nothing is shown to scan.', true); return; }
 
@@ -1984,6 +2241,7 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     btn.textContent = busyLabel;
     say('Querying AWS for ' + plural(types.length, 'instance type') + ' across '
       + plural(regions.length, 'region') + '…');
+    if (progress) { scanProgressOpen(types, regions); }
 
     fetch('api/refresh', {
       method: 'POST',
@@ -1996,12 +2254,15 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       });
     }).then(function (body) {
       var failed = Object.keys(body.failures || {});
-      say('Scanned in ' + body.duration_s + 's — ' + body.inserted + ' new price(s), '
-        + body.extended + ' unchanged'
-        + (failed.length ? '. Could not reach: ' + failed.join(', ') : '') + '. Reloading…');
+      var summary = 'Scanned in ' + body.duration_s + 's — ' + body.inserted
+        + ' new price(s), ' + body.extended + ' unchanged'
+        + (failed.length ? '. Could not reach: ' + failed.join(', ') : '');
+      say(summary + '. Reloading…');
+      if (progress) { scanProgressEnd(summary + '. Reloading…', false); }
       setTimeout(function () { location.reload(); }, 1100);
     }).catch(function (error) {
       say('Scan failed: ' + error.message, true);
+      if (progress) { scanProgressEnd('Scan failed: ' + error.message, true); }
       scanning = false;
       btn.disabled = false;
       btn.textContent = was;

@@ -1127,3 +1127,125 @@ def test_a_page_load_does_not_fetch_from_providers(seeded) -> None:
     with TestClient(app) as client:
         assert client.get("/").status_code == 200
         assert client.get("/api/market").status_code == 200
+
+
+# --- the spot floor ----------------------------------------------------------
+# The page makes a claim about market structure -- AWS will not price spot below a
+# tenth of on-demand -- and prints numbers next to it. Those numbers are computed
+# from the rendered rows, never asserted, so the prose stays true if AWS changes
+# the rule.
+
+
+def _entry(instance_type, region, spot, on_demand):
+    """One rendered row, built through the real read model rather than by hand.
+
+    `region_table` is what the page actually renders, so constructing `RegionRow`
+    directly would let these tests keep passing through a change to how a row is
+    assembled -- including a change to how `on_demand_usd_hr` gets attached, which
+    is the exact input `floor_stats` measures.
+    """
+    from spotfloor.query import region_table
+    from spotfloor.storage.base import OfferingRecord
+
+    now = datetime.now(UTC)
+
+    def record(price, kind):
+        return OfferingRecord(
+            offering=offering(
+                instance_type=instance_type,
+                region=region,
+                zone=f"{region}a" if kind is PriceKind.SPOT else None,
+                price=price,
+                kind=kind,
+                observed_at=now,
+            ),
+            first_seen=now - timedelta(hours=1),
+            last_seen=now,
+        )
+
+    records = [record(spot, PriceKind.SPOT)]
+    if on_demand is not None:
+        records.append(record(on_demand, PriceKind.ON_DEMAND))
+
+    from spotfloor.web.app import TableEntry
+
+    row = next(r for r in region_table(records) if r.price_kind is PriceKind.SPOT)
+    return TableEntry(row=row, series=[])
+
+
+def test_floor_stats_counts_rows_pinned_to_the_floor() -> None:
+    from spotfloor.web.app import floor_stats
+
+    stats = floor_stats([
+        _entry("m5.large", "sa-east-1", 0.0612, 0.6120),    # exactly 10% -- the floor
+        _entry("m5.xlarge", "sa-east-1", 0.0306, 0.3060),   # exactly 10%
+        _entry("c5.large", "us-east-1", 0.0400, 0.0850),    # 47% -- nowhere near
+        _entry("r5.large", "us-east-1", 0.1000, 0.1260),    # 79%
+    ])
+
+    assert stats["priced"] == 4
+    assert stats["at_floor"] == 2
+    assert stats["at_floor_pct"] == pytest.approx(50.0)
+    assert stats["min_ratio"] == pytest.approx(0.10, abs=1e-6)
+    assert stats["below_floor"] == 0
+
+
+def test_a_row_a_hair_off_the_floor_still_counts_as_on_it() -> None:
+    """Prices are quantized to micro-dollars, so an exactly-floored row divides to
+    a number a shade either side of 0.1. The tolerance exists for that and must not
+    be wide enough to sweep in a row that is merely cheap."""
+    from spotfloor.web.app import floor_stats
+
+    stats = floor_stats([
+        _entry("a.large", "us-east-1", 0.100_04, 1.0),   # 0.10004 -- quantization
+        _entry("b.large", "us-east-1", 0.099_49, 1.0),   # the real measured minimum
+        _entry("c.large", "us-east-1", 0.1100, 1.0),     # 11% -- genuinely above
+    ])
+    assert stats["at_floor"] == 2
+    # 0.09949 is the lowest ratio seen in 15,277 real pairs. It is a floored price
+    # rounded, not a price that broke through the floor, and reporting it as the
+    # latter would undercut the very claim the section makes.
+    assert stats["below_floor"] == 0
+
+
+def test_floor_stats_ignores_rows_with_no_on_demand_price() -> None:
+    """A row with nothing to compare against is not a row at the floor, and it must
+    not dilute the percentage either -- it is absent from the denominator."""
+    from spotfloor.web.app import floor_stats
+
+    stats = floor_stats([
+        _entry("m5.large", "sa-east-1", 0.0612, 0.6120),
+        _entry("m5.large", "cn-north-1", 0.0500, None),   # CNY region, never priced
+    ])
+    assert stats["priced"] == 1
+    assert stats["at_floor"] == 1
+    assert stats["at_floor_pct"] == pytest.approx(100.0)
+
+
+def test_floor_regions_rank_by_share_not_by_raw_count() -> None:
+    """A raw count would just rank regions by how many instance types they offer."""
+    from spotfloor.web.app import floor_stats
+
+    entries = [_entry(f"big{i}.large", "us-east-1", 0.5, 1.0) for i in range(20)]
+    entries += [_entry(f"big{i}.large", "us-east-1", 0.1, 1.0) for i in range(3)]
+    entries += [_entry(f"sm{i}.large", "sa-east-1", 0.1, 1.0) for i in range(2)]
+
+    ranked = floor_stats(entries)["regions"]
+    assert ranked[0]["region"] == "sa-east-1", "raw counts would have put us-east-1 first"
+    assert ranked[0]["pct"] == pytest.approx(100.0)
+
+
+def test_the_page_explains_the_floor_it_is_named_after(priced_client) -> None:
+    """The tool is called spotfloor and never said what a spot floor was."""
+    body = priced_client.get("/").text
+    assert 'id="the-floor"' in body
+    assert "tenth of its" in body, "the rule is not stated in words"
+    # The measured figures, not a hardcoded boast.
+    assert "of rows sit on the floor" in body
+    assert "90% off" not in body, "a hardcoded discount claim reappeared"
+
+
+def test_no_floor_section_without_prices_to_measure(client) -> None:
+    """The seeded fixture has no on-demand prices, so there is no floor to describe
+    and the section must be absent rather than rendering zeroes as a finding."""
+    assert 'id="the-floor"' not in client.get("/").text

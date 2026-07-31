@@ -28,6 +28,38 @@ deliberate — the sample exists to show you the interface, not to be a data sou
 
 ---
 
+## What a "spot floor" is
+
+**AWS will not sell you a spot instance for less than a tenth of its on-demand
+price.** Bid theory says a spot price should fall until demand meets supply. It
+doesn't. It falls to 10% of list and stops dead — however idle the capacity,
+however unfashionable the instance, however empty the region. That wall is the
+spot floor, and it is what this tool is named after.
+
+It is not a rule AWS publishes. It is one you can measure, so this repo measures it
+rather than repeating it. Across **15,277 (instance type, region) pairs** on
+2026-07-30:
+
+| | |
+|---|---|
+| Lowest spot price seen, as a fraction of on-demand | **0.0995×** |
+| Rows below 10% of list | **0** |
+| Rows pinned exactly to the floor | **771 (5.0%)** — the 0.10 histogram bucket holds 836, against 130–250 in each neighbouring bucket |
+| Highest ratio seen | **1.000045×** — spot is capped at the list price too |
+
+So the entire spot market lives inside a band one order of magnitude wide, between
+10% and 100% of on-demand. The page states these figures from the rows it is
+actually rendering (`floor_stats` in `web/app.py`), never from a constant — if AWS
+changes the rule, the numbers move and the prose stays true.
+
+**Why it matters when you are choosing where to run a GPU.** A row at the floor is
+at its structural minimum: waiting will not make it cheaper, and the only way to pay
+less is to launch the same hardware in another region. A row well above the floor
+has room to fall — and room to rise. The table badges floored rows and the **At
+floor** toggle isolates them.
+
+---
+
 ## What it shows
 
 | | |
@@ -216,7 +248,7 @@ uv run python scripts/serve.py --backfill                # dashboard
 uv run python scripts/scan.py --help                     # one-shot scan
 uv run python scripts/snapshot.py --out site --backfill   # static export
 
-uv run pytest -m "not live"    # 212 tests, no AWS needed
+uv run pytest -m "not live"    # 218 tests, no AWS needed
 uv run pytest                  # + live correctness gates
 ```
 

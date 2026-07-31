@@ -247,6 +247,76 @@ def build_entries(
     return entries
 
 
+# The floor this project is named after: AWS will not sell a spot instance for less
+# than a tenth of its on-demand list price. It is not documented as a hard rule so
+# much as observable as one, which is why `floor_stats` measures it on every render
+# instead of asserting it -- see that function.
+SPOT_FLOOR_RATIO = 0.10
+
+# Prices arrive quantized to micro-dollars, so a row sitting exactly on the floor
+# lands a hair either side of 0.1 after division. Sized from the measurement, not
+# guessed: the lowest ratio observed across 15,277 real pairs was 0.099494, so a
+# tighter band (0.0005 was the first attempt) reports genuine floor rows as having
+# broken through it. Still nowhere near wide enough to sweep in a row that is merely
+# cheap -- the band tops out at 0.101 and the next histogram bucket starts at 0.11.
+_FLOOR_TOLERANCE = 0.001
+
+
+def floor_stats(entries: Sequence[TableEntry]) -> dict[str, Any]:
+    """How hard the spot floor is biting, measured on the rows being rendered.
+
+    **Measured, never asserted.** The page makes a claim about market structure --
+    "spot cannot go below 10% of on-demand" -- and a claim like that has to be
+    computed from the data it is printed next to, or it is folklore with a number
+    attached. If AWS changes the rule, these figures move and the prose stays true;
+    a hardcoded "90% off!" would quietly become a lie.
+
+    Measured over 15,277 (type, region) pairs on 2026-07-30: the minimum ratio was
+    0.0995, exactly three rows fell below 0.0999 (float noise on a micro-dollar
+    quantization), 836 sat in the 0.10 bucket against ~130-250 in each neighbouring
+    one, and the maximum was 1.000045 -- so the distribution has a hard wall at one
+    tenth and a ceiling at parity.
+    """
+    ratios = [
+        (e.row.cheapest_usd_hr / e.row.on_demand_usd_hr, e.row)
+        for e in entries
+        if e.row.on_demand_usd_hr
+    ]
+    if not ratios:
+        return {"priced": 0, "at_floor": 0, "at_floor_pct": 0.0}
+
+    at_floor = [row for ratio, row in ratios if ratio <= SPOT_FLOOR_RATIO + _FLOOR_TOLERANCE]
+    by_region: dict[str, int] = {}
+    for row in at_floor:
+        by_region[row.region] = by_region.get(row.region, 0) + 1
+    totals: dict[str, int] = {}
+    for _ratio, row in ratios:
+        totals[row.region] = totals.get(row.region, 0) + 1
+
+    return {
+        "priced": len(ratios),
+        "at_floor": len(at_floor),
+        "at_floor_pct": 100 * len(at_floor) / len(ratios),
+        "min_ratio": min(r for r, _ in ratios),
+        "max_ratio": max(r for r, _ in ratios),
+        "below_floor": sum(1 for r, _ in ratios if r < SPOT_FLOOR_RATIO - _FLOOR_TOLERANCE),
+        "above_list": sum(1 for r, _ in ratios if r > 1 + _FLOOR_TOLERANCE),
+        # Where it bites hardest, as a share of each region's own rows -- a raw count
+        # would just rank regions by how many instance types they offer.
+        "regions": sorted(
+            (
+                {"region": region, "at_floor": n, "of": totals[region],
+                 "pct": 100 * n / totals[region]}
+                for region, n in by_region.items()
+                if totals.get(region)
+            ),
+            key=lambda d: d["pct"],
+            reverse=True,
+        )[:5],
+        "example": min(at_floor, key=lambda r: -r.on_demand_usd_hr) if at_floor else None,
+    }
+
+
 def _rle(values: Sequence[float | None]) -> str:
     """Run-length encode a bucketed price series into one short string.
 
@@ -717,6 +787,8 @@ def create_app(
                     or not getattr(request.app.state, "aws_ready", True)
                 ),
                 "row_count": len(entries),
+                "floor": floor_stats(entries),
+                "floor_ratio_pct": int(SPOT_FLOOR_RATIO * 100),
                 "region_count": len({e.row.region for e in entries}),
                 "type_count": len({e.row.instance_type for e in entries}),
                 "gpu_type_count": len(

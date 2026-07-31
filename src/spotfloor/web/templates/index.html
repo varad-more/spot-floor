@@ -70,17 +70,79 @@
      spends the width it is given rather than reserving room for a viewport it will
      never see. 1760px fits the full table with no horizontal scroll on a 1080p
      screen and still leaves margins on a 1440p one. */
-  .wrap { max-width: 1760px; margin: 0 auto; padding: 2rem 2rem 3rem; }
-  h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.02em; }
-  .head { display: flex; gap: 1rem; align-items: flex-start; justify-content: space-between; }
-  .lede { margin: .35rem 0 0; color: var(--muted); max-width: 68ch; font-size: .95rem; }
+  .wrap { max-width: 1760px; margin: 0 auto; padding: 1.75rem 2rem 3rem; }
+
+  /* --- masthead ------------------------------------------------------------ */
+  /* Two columns, because one was leaving most of the window empty. Prose caps at
+     ~62ch to stay readable, which on a 1600px viewport left ~900px of nothing
+     beside it with a lone theme toggle in the corner. The headline counts move
+     into that gap: they are the most concrete facts the page has, and they used
+     to be 0.8rem of muted text under four paragraphs of preamble. */
+  .head {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto;
+    gap: 1.25rem 2.5rem; align-items: start; margin-bottom: 1.1rem;
+  }
+  h1 {
+    margin: 0; font-size: 1.85rem; font-weight: 650;
+    letter-spacing: -0.035em; line-height: 1.05;
+  }
+  h1 .mark { color: var(--accent); }
+  .lede { margin: .45rem 0 0; color: var(--muted); max-width: 62ch; font-size: .95rem; }
+
+  .headside { display: flex; flex-direction: column; align-items: flex-end; gap: .85rem; }
+  .stats { display: flex; gap: 1.9rem; }
+  .stat { text-align: right; line-height: 1.1; }
+  .stat b {
+    display: block; font-size: 1.4rem; font-weight: 600; letter-spacing: -0.025em;
+    font-variant-numeric: tabular-nums;
+  }
+  .stat span {
+    font-size: .68rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .07em;
+  }
+  /* The floor is what the tool is named after and its evidence now sits below the
+     table, so the masthead carries a one-line pointer to it. */
+  .floorteaser { margin: 0; font-size: .82rem; color: var(--muted); text-align: right; }
+  .floorteaser a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .floorteaser a:hover { text-decoration: underline; }
+
+  /* The three things to know before reading a row. Was a stacked <ol> in the prose
+     column -- three more grey lines at the same weight as the rest. Across the full
+     width it reads as three facts rather than a paragraph to wade through. */
+  .primer {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+    margin: 0 0 1rem; padding: 0; list-style: none; overflow: hidden;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+  }
+  .primer li {
+    margin: 0; padding: .7rem .95rem; font-size: .83rem; color: var(--muted);
+    border-left: 1px solid var(--line);
+  }
+  .primer li:first-child { border-left: 0; }
+  /* Only the leading phrase becomes a heading line. Scoping this to `strong` in
+     general put the third item's inline ⇄ on a line of its own, stranding the
+     comma before it. */
+  .primer strong:first-child {
+    display: block; color: var(--ink); font-weight: 600; margin-bottom: .15rem;
+  }
+  .primer strong { color: var(--ink); font-weight: 600; }
+  .primer em { color: var(--ink); font-style: normal; font-weight: 600; }
+
+  /* One rule carrying the standing caveat, the capture time and the sibling link.
+     These were three stacked paragraphs; the caveat still leads, because it is the
+     one claim on this page that has to be read. */
+  .subhead {
+    display: flex; flex-wrap: wrap; align-items: baseline; gap: .35rem 1.4rem;
+    padding: .55rem 0; margin-bottom: 1.25rem;
+    border-top: 1px solid var(--line); border-bottom: 1px solid var(--line);
+  }
   /* The availability caveat used to live only inside a collapsed <details>, which
      is a claim the reader never sees, and inside a table column that said the same
      word 646 times. Stated once, always visible, and linked to the long version. */
-  .claim { margin: .6rem 0 0; font-size: .84rem; color: var(--muted); max-width: 68ch; }
-  .claim .pill { margin-right: .25rem; vertical-align: baseline; }
+  .claim { margin: 0; font-size: .82rem; color: var(--muted); }
+  .claim .pill { margin-right: .3rem; vertical-align: baseline; }
   .claim a { color: var(--accent); }
-  .meta { margin-top: .6rem; font-size: .8rem; color: var(--muted); }
+  .meta { margin: 0; margin-left: auto; font-size: .8rem; color: var(--muted); }
   code { font-size: .92em; background: var(--panel); border: 1px solid var(--line);
     border-radius: 4px; padding: .08em .35em; }
 
@@ -193,8 +255,11 @@
   .charthead .hint { font-size: .78rem; color: var(--muted); flex: 1 1 12rem; }
   #enlarge { margin-left: auto; flex: none; }
   #chart { display: block; width: 100%; height: auto; touch-action: none; }
+  /* The empty chart sits directly above the table, so it is the last thing between
+     the reader and the prices. 2.5rem of padding for one line of text made it a
+     175px void at the fold; this keeps the invitation without the hole. */
   .plot-empty {
-    padding: 2.5rem 1rem; text-align: center; color: var(--muted); font-size: .88rem;
+    padding: 1.1rem 1rem; text-align: center; color: var(--muted); font-size: .88rem;
   }
   .legend {
     display: flex; flex-wrap: wrap; gap: .3rem .9rem; margin-top: .6rem;
@@ -322,17 +387,6 @@
   .modalacts { display: flex; gap: .4rem; align-items: center; }
   .modalfoot { margin: .7rem 0 0; font-size: .78rem; color: var(--muted); }
 
-  /* --- the primer, and the two narrow modals ------------------------------ */
-  .primer { margin: .5rem 0 .6rem; padding-left: 1.1rem; font-size: .86rem;
-    color: var(--muted); max-width: 68ch; }
-  .primer li { margin-bottom: .18rem; }
-  .primer strong { color: var(--ink); font-weight: 600; }
-  .sibling {
-    margin: .55rem 0 0; font-size: .82rem; color: var(--muted); max-width: 72ch;
-    padding-left: .6rem; border-left: 2px solid var(--line);
-  }
-  .sibling a { color: var(--accent); font-weight: 600; }
-
   /* The spot floor explainer. Prose and evidence side by side on purpose: the claim
      is unusual enough that it should not be readable without the numbers that
      support it. Two columns, because the page is desktop-only and has the room. */
@@ -456,7 +510,7 @@
 
   <header class="head">
     <div>
-      <h1>spotfloor</h1>
+      <h1>spot<span class="mark">floor</span></h1>
       <p class="lede">
         You picked the GPU. <strong>This tells you where to rent it.</strong> Spot and
         on-demand prices for every EC2 instance type, compared across every region,
@@ -464,40 +518,49 @@
         every price names the availability zone it came from, because you launch into a
         zone, not into a region.
       </p>
-      <ol class="primer">
-        <li><strong>One row = one instance type in one region</strong>, priced at its
-          cheapest zone. <em>AZ spread</em> is how much that regional number hid.</li>
-        <li><strong>Compare the rows, not the columns.</strong> The same H100 in two
-          regions costs different amounts; that gap is the money.</li>
-        <li><strong>Tick rows to chart them</strong>, <strong>⇄</strong> to plot one type
-          across every region{% if not snapshot %}, <strong>Scan…</strong> to fetch fresh
-          prices for a scope you choose{% endif %}.</li>
-      </ol>
-      <p class="sibling">
-        Still deciding <em>which</em> instance you need? →
-        <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a>
-        weighs vCPU, memory, GPU and network against your priorities. This page picks up
-        where that one leaves off.
-      </p>
-      <p class="claim">
-        <span class="pill">availability: unknown</span>
-        AWS publishes no availability, so no row here claims any. This compares
-        <strong>price</strong> only.
-        <a href="#why-unknown">Why — and what “price moves” is instead</a>
-      </p>
-      <p class="meta">
-        Data fetched <strong>{{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</strong> ·
-        {{ '{:,}'.format(row_count) }} rows · {{ region_count }} regions ·
-        {{ '{:,}'.format(type_count) }} instance types
-        ({{ gpu_type_count }} with GPUs) ·
-        {% if snapshot %}static snapshot{% else %}live · polls AWS every
-        {{ config.poll_interval_s // 60 }}&nbsp;min, and reloads to match when you are
-        not mid-way through something{% endif %}
-      </p>
     </div>
-    <button type="button" class="btn iconbtn" id="theme"
-      title="Switch between light and dark" aria-label="Switch between light and dark">◐</button>
+    <div class="headside">
+      <button type="button" class="btn iconbtn" id="theme"
+        title="Switch between light and dark" aria-label="Switch between light and dark">◐</button>
+      <div class="stats">
+        <div class="stat"><b>{{ '{:,}'.format(row_count) }}</b><span>rows</span></div>
+        <div class="stat"><b>{{ region_count }}</b><span>regions</span></div>
+        <div class="stat"><b>{{ '{:,}'.format(type_count) }}</b><span>types</span></div>
+        <div class="stat"><b>{{ gpu_type_count }}</b><span>with GPUs</span></div>
+      </div>
+      {% if floor.priced %}
+      <p class="floorteaser">
+        {{ '{:,}'.format(floor.at_floor) }} rows ({{ '%.1f' % floor.at_floor_pct }}%)
+        sit at the <a href="#the-floor">spot floor</a> — as low as AWS goes
+      </p>
+      {% endif %}
+    </div>
   </header>
+
+  <ol class="primer">
+    <li><strong>One row = one type in one region</strong> priced at its cheapest zone.
+      <em>AZ spread</em> is how much that regional number hid.</li>
+    <li><strong>Compare rows, not columns.</strong> The same H100 in two regions costs
+      different amounts; that gap is the money.</li>
+    <li><strong>Tick rows to chart them.</strong>
+      <strong>⇄</strong> plots one type across every region{% if not snapshot %};
+      <strong>Scan…</strong> fetches fresh prices for a scope you pick{% endif %}.</li>
+  </ol>
+
+  <div class="subhead">
+    <p class="claim">
+      <span class="pill">availability: unknown</span>
+      AWS publishes no availability, so no row here claims any. This compares
+      <strong>price</strong> only.
+      <a href="#why-unknown">Why — and what “price moves” is instead</a>
+    </p>
+    <p class="meta">
+      {{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC ·
+      {% if snapshot %}static snapshot{% else %}live · polls every
+      {{ config.poll_interval_s // 60 }}&nbsp;min{% endif %} ·
+      <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a>
+    </p>
+  </div>
 
   {% if snapshot %}
   <div class="callout warn">
@@ -510,89 +573,6 @@
   </div>
   {% endif %}
 
-  {% if floor.priced %}
-  <section class="card floorcard" id="the-floor">
-    <div class="floortext">
-      <h2>Why “spot floor”?</h2>
-      <p><strong>AWS will not sell you a spot instance for less than a tenth of its
-      on-demand price.</strong> Bid theory says a spot price should fall until demand
-      meets supply. It doesn't. It falls to
-      <strong>{{ floor_ratio_pct }}% of list</strong> and stops dead — no matter how
-      idle the capacity, how unfashionable the instance, or how empty the region.
-      That wall is the spot floor, and it is what this tool is named after.</p>
-
-      <p>It is not a rule AWS publishes. It is one you can <em>see</em>, which is why
-      the numbers beside this paragraph are measured on the
-      {{ '{:,}'.format(floor.priced) }} rows currently in the table rather than
-      quoted:</p>
-
-      <ul class="floorfacts">
-        <li><strong>{{ '%.4f' % floor.min_ratio }}×</strong> is the cheapest spot
-          price anyone here gets, as a fraction of on-demand — against a theoretical
-          floor of {{ '%.2f' % floor_ratio }}×.
-          {% if floor.below_floor %}Only {{ floor.below_floor }}
-          row{{ '' if floor.below_floor == 1 else 's' }} sit{{ 's' if floor.below_floor == 1 else '' }}
-          below it, by less than a hundredth of a cent — quantization, not a discount.
-          {% else %}Not one row of {{ '{:,}'.format(floor.priced) }} goes below it.{% endif %}</li>
-        <li><strong>{{ '{:,}'.format(floor.at_floor) }} rows
-          ({{ '%.1f' % floor.at_floor_pct }}%)</strong> are pinned exactly to it —
-          priced at the floor because there is nowhere further down to go.</li>
-        <li><strong>{{ '%.4f' % floor.max_ratio }}×</strong> is the most anyone pays.
-          Spot is capped at the on-demand price too, so the whole market lives inside
-          a band one order of magnitude wide.</li>
-      </ul>
-
-      <p class="floorso"><strong>What that means when you are picking.</strong>
-      A row at the floor is at its structural minimum: waiting will not make it
-      cheaper, and the only way to pay less is to launch the same hardware somewhere
-      else. A row well above the floor has room to fall — and room to rise. Sort by
-      <em>Saves</em> to see which is which.</p>
-    </div>
-
-    <div class="floorviz">
-      <div class="floormeter" role="img"
-        aria-label="{{ '{:,}'.format(floor.at_floor) }} of {{ '{:,}'.format(floor.priced) }} rows are priced at the floor">
-        <div class="floorbar"><span style="height: {{ '%.1f' % floor.at_floor_pct }}%"></span></div>
-        <div class="floorlabel">
-          <strong>{{ '%.1f' % floor.at_floor_pct }}%</strong>
-          <span>of rows sit on the floor</span>
-        </div>
-      </div>
-      {% if floor.regions %}
-      <table class="floorregions">
-        <caption>Where the floor binds hardest</caption>
-        {% for r in floor.regions %}
-        <tr>
-          <td>{{ r.region }}</td>
-          <td class="num">{{ '%.0f' % r.pct }}%</td>
-          <td class="dim">{{ r.at_floor }}/{{ r.of }}</td>
-        </tr>
-        {% endfor %}
-      </table>
-      {% endif %}
-      {% if floor.example %}
-      <p class="floorex">The floor applies at every price point — even
-        <strong>{{ floor.example.instance_type }}</strong> in
-        {{ floor.example.region }}:
-        <strong>${{ '%.2f' % floor.example.cheapest_usd_hr }}</strong>/hr against
-        ${{ '%.2f' % floor.example.on_demand_usd_hr }} list.</p>
-      {% endif %}
-    </div>
-  </section>
-  {% endif %}
-
-  <details class="callout" id="why-unknown">
-    <summary>Why availability is <code>unknown</code>, and what “price moves” measures</summary>
-    <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
-    is computed against <em>the calling account's</em> quota and history — so a score
-    fetched with this app's credentials describes that account, not your odds of getting
-    capacity. spotfloor does not call that API and reports <code>unknown</code> rather
-    than inventing a number. <strong>This is a price comparator; it does not claim to
-    know what you can get.</strong></p>
-    <p><strong>“Price moves” is not availability either.</strong> It counts how many
-    times the price changed in the window — a real fact from AWS's published history,
-    and a fair hint that a zone is contended. That hint is where it ends.</p>
-  </details>
 
   {% for note in notes %}
   <div class="callout warn"><p>{{ note }}</p></div>
@@ -692,6 +672,90 @@
     <p>Run a scan: <code>uv run python scripts/scan.py --backfill</code></p>
   </div></div>
   {% endif %}
+
+  {% if floor.priced %}
+  <section class="card floorcard" id="the-floor">
+    <div class="floortext">
+      <h2>Why “spot floor”?</h2>
+      <p><strong>AWS will not sell you a spot instance for less than a tenth of its
+      on-demand price.</strong> Bid theory says a spot price should fall until demand
+      meets supply. It doesn't. It falls to
+      <strong>{{ floor_ratio_pct }}% of list</strong> and stops dead — no matter how
+      idle the capacity, how unfashionable the instance, or how empty the region.
+      That wall is the spot floor, and it is what this tool is named after.</p>
+
+      <p>It is not a rule AWS publishes. It is one you can <em>see</em>, which is why
+      the numbers beside this paragraph are measured on the
+      {{ '{:,}'.format(floor.priced) }} rows currently in the table rather than
+      quoted:</p>
+
+      <ul class="floorfacts">
+        <li><strong>{{ '%.4f' % floor.min_ratio }}×</strong> is the cheapest spot
+          price anyone here gets, as a fraction of on-demand — against a theoretical
+          floor of {{ '%.2f' % floor_ratio }}×.
+          {% if floor.below_floor %}Only {{ floor.below_floor }}
+          row{{ '' if floor.below_floor == 1 else 's' }} sit{{ 's' if floor.below_floor == 1 else '' }}
+          below it, by less than a hundredth of a cent — quantization, not a discount.
+          {% else %}Not one row of {{ '{:,}'.format(floor.priced) }} goes below it.{% endif %}</li>
+        <li><strong>{{ '{:,}'.format(floor.at_floor) }} rows
+          ({{ '%.1f' % floor.at_floor_pct }}%)</strong> are pinned exactly to it —
+          priced at the floor because there is nowhere further down to go.</li>
+        <li><strong>{{ '%.4f' % floor.max_ratio }}×</strong> is the most anyone pays.
+          Spot is capped at the on-demand price too, so the whole market lives inside
+          a band one order of magnitude wide.</li>
+      </ul>
+
+      <p class="floorso"><strong>What that means when you are picking.</strong>
+      A row at the floor is at its structural minimum: waiting will not make it
+      cheaper, and the only way to pay less is to launch the same hardware somewhere
+      else. A row well above the floor has room to fall — and room to rise. Sort by
+      <em>Saves</em> to see which is which.</p>
+    </div>
+
+    <div class="floorviz">
+      <div class="floormeter" role="img"
+        aria-label="{{ '{:,}'.format(floor.at_floor) }} of {{ '{:,}'.format(floor.priced) }} rows are priced at the floor">
+        <div class="floorbar"><span style="height: {{ '%.1f' % floor.at_floor_pct }}%"></span></div>
+        <div class="floorlabel">
+          <strong>{{ '%.1f' % floor.at_floor_pct }}%</strong>
+          <span>of rows sit on the floor</span>
+        </div>
+      </div>
+      {% if floor.regions %}
+      <table class="floorregions">
+        <caption>Where the floor binds hardest</caption>
+        {% for r in floor.regions %}
+        <tr>
+          <td>{{ r.region }}</td>
+          <td class="num">{{ '%.0f' % r.pct }}%</td>
+          <td class="dim">{{ r.at_floor }}/{{ r.of }}</td>
+        </tr>
+        {% endfor %}
+      </table>
+      {% endif %}
+      {% if floor.example %}
+      <p class="floorex">The floor applies at every price point — even
+        <strong>{{ floor.example.instance_type }}</strong> in
+        {{ floor.example.region }}:
+        <strong>${{ '%.2f' % floor.example.cheapest_usd_hr }}</strong>/hr against
+        ${{ '%.2f' % floor.example.on_demand_usd_hr }} list.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <details class="callout" id="why-unknown">
+    <summary>Why availability is <code>unknown</code>, and what “price moves” measures</summary>
+    <p>AWS does not publish spot availability. The nearest thing, Spot Placement Score,
+    is computed against <em>the calling account's</em> quota and history — so a score
+    fetched with this app's credentials describes that account, not your odds of getting
+    capacity. spotfloor does not call that API and reports <code>unknown</code> rather
+    than inventing a number. <strong>This is a price comparator; it does not claim to
+    know what you can get.</strong></p>
+    <p><strong>“Price moves” is not availability either.</strong> It counts how many
+    times the price changed in the window — a real fact from AWS's published history,
+    and a fair hint that a zone is contended. That hint is where it ends.</p>
+  </details>
 
   {% if not snapshot %}
   <dialog class="modal narrow" id="picker" aria-labelledby="pickertitle">

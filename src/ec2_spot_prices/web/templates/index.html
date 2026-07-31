@@ -496,13 +496,35 @@
      cell's own overflow, hence the higher z-index than the toolbar's. */
   .modal .ms-menu { z-index: 40; }
 
-  footer { margin-top: 2rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
+  footer { margin-top: 2.5rem; padding-top: 1.25rem; border-top: 1px solid var(--line);
     font-size: .82rem; color: var(--muted); }
-  footer ul { padding-left: 1.1rem; margin: .4rem 0 1rem; }
+  footer ul { padding-left: 1.1rem; margin: .4rem 0 1.4rem; }
   footer li { margin-bottom: .3rem; }
-  footer .by { display: flex; justify-content: space-between; gap: 1rem;
-    flex-wrap: wrap; align-items: baseline; }
   footer a { color: var(--accent); }
+
+  /* Three columns, so the byline is somewhere to go rather than a sentence that
+     trails off the end of the methodology notes. */
+  .footcols {
+    display: grid; grid-template-columns: 1.5fr 1fr 1fr; gap: 1.4rem 2.5rem;
+    padding: 1.3rem 0; border-top: 1px solid var(--line);
+  }
+  .footcols h3 {
+    margin: 0 0 .5rem; font-size: .71rem; font-weight: 600; color: var(--ink);
+    text-transform: uppercase; letter-spacing: .07em;
+  }
+  .footcols a { display: block; margin-bottom: .28rem; }
+  .footcols p { margin: .5rem 0 0; max-width: 40ch; }
+  footer .portfolio {
+    display: inline-block; margin: 0; font-size: 1.2rem; font-weight: 650;
+    letter-spacing: -0.025em; color: var(--ink); text-decoration: none;
+  }
+  footer .portfolio:hover { color: var(--accent); }
+  footer .portfolio::after { content: " ↗"; font-size: .75em; color: var(--muted); }
+  .footcols .sub { display: block; margin: -.1rem 0 0; }
+  footer .by {
+    display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    align-items: baseline; padding-top: .9rem; border-top: 1px solid var(--line);
+  }
 </style>
 </head>
 <body>
@@ -889,14 +911,33 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       {%- else %} Scope is <strong>every instance type EC2 offers</strong> —
       {{ '{:,}'.format(type_count) }} of them priced here, discovered from the API rather
       than from a list someone maintains by hand.{% endif %}</li>
-      <li>JSON: {% if snapshot %}<a href="api/market.json"><code>api/market.json</code></a>
-      {%- else %}<code>/api/market</code>, <code>/api/history/{instance_type}</code>{% endif %}</li>
     </ul>
+
+    <div class="footcols">
+      <div>
+        <h3>Built by</h3>
+        <a class="portfolio" href="https://varadmore.me">varadmore.me</a>
+        <p><strong>Varad More</strong> — more projects, writing and contact
+          details on the portfolio.</p>
+      </div>
+      <div>
+        <h3>This project</h3>
+        <a href="https://github.com/varad-more/ec2-spot-prices">Source on GitHub</a>
+        {% if snapshot %}<a href="api/market.json">JSON API</a>
+        <span class="sub">Static <code>api/market.json</code></span>
+        {%- else %}<span class="sub">JSON: <code>/api/market</code>,
+        <code>/api/history/{instance_type}</code></span>{% endif %}
+      </div>
+      <div>
+        <h3>Also by me</h3>
+        <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a>
+        <span class="sub">Sizing rather than pricing — weighs vCPU, memory, GPU
+          and network against your priorities.</span>
+      </div>
+    </div>
+
     <div class="by">
-      <span>Built by <strong>Varad More</strong> ·
-        <a href="https://github.com/varad-more/ec2-spot-prices">github.com/varad-more/ec2-spot-prices</a>
-        · sister tool:
-        <a href="https://varadmore.me/ec2-instance-advisor/">EC2 Instance Advisor</a></span>
+      <span>© Varad More · <a href="https://github.com/varad-more/ec2-spot-prices/blob/main/LICENSE">MIT licensed</a></span>
       <span>Data fetched {{ generated_at.strftime('%Y-%m-%d %H:%M') }} UTC</span>
     </div>
   </footer>

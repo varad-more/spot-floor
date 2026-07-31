@@ -24,7 +24,13 @@ from fastapi.testclient import TestClient
 
 from spotfloor.models import Availability, InstanceOffering, PriceKind
 from spotfloor.storage.sqlite import SqliteTimeSeriesStore
-from spotfloor.web.app import NO_CREDENTIALS_NOTE, WebConfig, create_app
+from spotfloor.web.app import (
+    NO_CREDENTIALS_NOTE,
+    SPOT_FLOOR_RATIO,
+    WebConfig,
+    _FLOOR_TOLERANCE,
+    create_app,
+)
 
 # --- reading the page's data -------------------------------------------------
 # The table is rendered by the browser from an embedded payload, because the full
@@ -492,7 +498,7 @@ def test_every_derived_column_says_what_it_means(client) -> None:
     body = client.get("/").text
     assert "$ per GPU" in body
     assert "divided by the number of GPUs" in body
-    assert "NOT an availability or fulfillment signal" in body
+    assert "not an availability or fulfillment signal" in body
     # Every ambiguous header ships a help marker, not just the two worst.
     assert body.count('class="q"') >= 6
 
@@ -731,14 +737,21 @@ def test_a_snapshot_says_it_is_a_snapshot(snapshot_client) -> None:
 
 
 def test_a_snapshot_does_not_pretend_to_refresh(snapshot_client) -> None:
-    """The meta refresh would silently reload a page nothing is updating."""
-    assert 'http-equiv="refresh"' not in snapshot_client.get("/").text
+    """Nothing updates a static file, so nothing there may reload it.
+
+    Both mechanisms are asserted. The live page reloads from a timer now rather than
+    a meta tag -- a tag reloads unconditionally and threw away the reader's plotted
+    series, filters and sort every five minutes -- and a snapshot must carry neither.
+    """
+    body = snapshot_client.get("/").text
+    assert 'http-equiv="refresh"' not in body
+    assert "location.reload" not in body, "a static page reloading itself looks live"
 
 
 def test_the_live_page_does_refresh_and_makes_no_snapshot_claim(client) -> None:
     """The inverse, so the two modes cannot quietly converge."""
     body = client.get("/").text
-    assert 'http-equiv="refresh"' in body
+    assert "location.reload" in body
     assert "This is a snapshot" not in body
 
 
@@ -1249,3 +1262,33 @@ def test_no_floor_section_without_prices_to_measure(client) -> None:
     """The seeded fixture has no on-demand prices, so there is no floor to describe
     and the section must be absent rather than rendering zeroes as a finding."""
     assert 'id="the-floor"' not in client.get("/").text
+
+
+def test_the_at_floor_toggle_shares_the_floor_cards_threshold(priced_client) -> None:
+    """One constant, rendered into the page — not retyped in JavaScript.
+
+    The floor card counts rows with `floor_stats`; the browser's "At floor" toggle
+    filters them client-side. They must select the same set. These used to be
+    independent literals — 0.10 + 0.001 in Python, a bare 0.101 in the script — that
+    agreed only by coincidence, so editing the tolerance would have left the card
+    reporting one count while the toggle showed a different set of rows, with
+    nothing failing.
+    """
+    body = priced_client.get("/").text
+    threshold = SPOT_FLOOR_RATIO + _FLOOR_TOLERANCE
+
+    assert f"<= {threshold}" in body, "the toggle's threshold is not the server's"
+    assert "<= 0.101," not in body.replace(f"<= {threshold},", ""), "a literal came back"
+
+
+def test_embedded_table_json_cannot_close_the_script_tag(priced_client) -> None:
+    """`json.dumps` does not escape `<`, and this lands inside <script>.
+
+    Every value is an AWS identifier today, so nothing can carry `</script>` — which
+    is exactly why the escaping has to be structural rather than a bet on the
+    character set staying that way.
+    """
+    body = priced_client.get("/").text
+    start = body.index('id="tabledata"')
+    payload = body[start : body.index("</script>", start)]
+    assert "<" not in payload.split(">", 1)[1], "raw < survived into the JSON payload"

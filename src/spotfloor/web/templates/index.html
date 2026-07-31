@@ -3,7 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{% if not snapshot %}<meta http-equiv="refresh" content="300">{% endif %}
+{# Auto-refresh is a script, not <meta http-equiv="refresh">, so it can decline.
+   The meta tag reloads unconditionally: it threw away your plotted series, filters,
+   sort order and column widths every 5 minutes, and closed any open dialog with it.
+   See the refresh block at the end of the chart script. #}
 <title>spotfloor — find the cheapest region for any GPU or EC2 instance</title>
 <meta name="description" content="Compare AWS EC2 spot and on-demand prices for every
   instance type across every region — GPU boxes included. Every price names the
@@ -456,8 +459,8 @@
       <h1>spotfloor</h1>
       <p class="lede">
         You picked the GPU. <strong>This tells you where to rent it.</strong> Spot and
-        on-demand prices for <em>every</em> EC2 instance type, compared
-        <em>across every region</em>, with {{ config.history_days }}-day history — and
+        on-demand prices for every EC2 instance type, compared across every region,
+        with {{ config.history_days }}-day history — and
         every price names the availability zone it came from, because you launch into a
         zone, not into a region.
       </p>
@@ -465,7 +468,7 @@
         <li><strong>One row = one instance type in one region</strong>, priced at its
           cheapest zone. <em>AZ spread</em> is how much that regional number hid.</li>
         <li><strong>Compare the rows, not the columns.</strong> The same H100 in two
-          regions costs different amounts; that gap is the thing worth acting on.</li>
+          regions costs different amounts; that gap is the money.</li>
         <li><strong>Tick rows to chart them</strong>, <strong>⇄</strong> to plot one type
           across every region{% if not snapshot %}, <strong>Scan…</strong> to fetch fresh
           prices for a scope you choose{% endif %}.</li>
@@ -487,7 +490,9 @@
         {{ '{:,}'.format(row_count) }} rows · {{ region_count }} regions ·
         {{ '{:,}'.format(type_count) }} instance types
         ({{ gpu_type_count }} with GPUs) ·
-        {% if snapshot %}static snapshot{% else %}live, refreshes every 5&nbsp;min{% endif %}
+        {% if snapshot %}static snapshot{% else %}live · polls AWS every
+        {{ config.poll_interval_s // 60 }}&nbsp;min, and reloads to match when you are
+        not mid-way through something{% endif %}
       </p>
     </div>
     <button type="button" class="btn iconbtn" id="theme"
@@ -519,14 +524,15 @@
       <p>It is not a rule AWS publishes. It is one you can <em>see</em>, which is why
       the numbers beside this paragraph are measured on the
       {{ '{:,}'.format(floor.priced) }} rows currently in the table rather than
-      quoted from anywhere:</p>
+      quoted:</p>
 
       <ul class="floorfacts">
         <li><strong>{{ '%.4f' % floor.min_ratio }}×</strong> is the cheapest spot
           price anyone here gets, as a fraction of on-demand — against a theoretical
-          floor of {{ '%.2f' % 0.1 }}×.
-          {% if floor.below_floor %}Only {{ floor.below_floor }} rows sit below it, by
-          less than a hundredth of a cent — quantization, not a discount.
+          floor of {{ '%.2f' % floor_ratio }}×.
+          {% if floor.below_floor %}Only {{ floor.below_floor }}
+          row{{ '' if floor.below_floor == 1 else 's' }} sit{{ 's' if floor.below_floor == 1 else '' }}
+          below it, by less than a hundredth of a cent — quantization, not a discount.
           {% else %}Not one row of {{ '{:,}'.format(floor.priced) }} goes below it.{% endif %}</li>
         <li><strong>{{ '{:,}'.format(floor.at_floor) }} rows
           ({{ '%.1f' % floor.at_floor_pct }}%)</strong> are pinned exactly to it —
@@ -536,7 +542,7 @@
           a band one order of magnitude wide.</li>
       </ul>
 
-      <p class="floorso"><strong>Why it matters when you are picking a GPU.</strong>
+      <p class="floorso"><strong>What that means when you are picking.</strong>
       A row at the floor is at its structural minimum: waiting will not make it
       cheaper, and the only way to pay less is to launch the same hardware somewhere
       else. A row well above the floor has room to fall — and room to rise. Sort by
@@ -584,8 +590,8 @@
     than inventing a number. <strong>This is a price comparator; it does not claim to
     know what you can get.</strong></p>
     <p><strong>“Price moves” is not availability either.</strong> It counts how many
-    times the price changed in the window — a real fact from AWS's published history and
-    a fair hint that a zone is contended. It is not a fulfillment probability.</p>
+    times the price changed in the window — a real fact from AWS's published history,
+    and a fair hint that a zone is contended. That hint is where it ends.</p>
   </details>
 
   {% for note in notes %}
@@ -652,15 +658,15 @@
           <th class="num sortable" data-key="ondemand" style="width:108px"><span class="cell">On-demand<span
             class="q" title="The published on-demand list price for this instance type in this region, from the AWS Price List API. AWS charges one on-demand rate per region — unlike spot, it does not vary by zone. A dash means it was not observed: either the IAM policy lacks pricing:GetProducts, or AWS quotes this region in a currency other than USD.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="saves" style="width:100px"><span class="cell">Saves<span
-            class="q" title="How much cheaper the cheapest zone is than paying on-demand — measured against the zone you would actually launch into, not a regional average. Negative means spot is currently ABOVE list price, which happens under contention and is a real market state. A dash means no on-demand price was observed; it does not mean spot saves you nothing.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="How much cheaper the cheapest zone is than paying on-demand — measured against the zone you would actually launch into, not a regional average. A negative value means spot is above list price; in practice that is float noise, since spot is capped at the on-demand rate. A dash means no on-demand price was observed; it does not mean spot saves you nothing.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="spread" style="width:104px"><span class="cell">AZ spread<span
             class="q" title="How much dearer the priciest zone in this region is than the cheapest one. A big spread means a regional average would mislead you.">?</span> <span class="arrow">↕</span></span></th>
           <th style="width:158px"><span class="cell">Spec<span
             class="q" title="vCPUs, memory, and GPUs. Hardware does not vary by region — only price does.">?</span></span></th>
           <th class="num sortable" data-key="pergpu" style="width:112px"><span class="cell">$ per GPU<span
-            class="q" title="Price per GPU per hour: the $/hr above divided by the number of GPUs. Lets you compare accelerator cost across instance sizes — a 8-GPU box at $20/hr is cheaper per GPU than a 1-GPU box at $3/hr. Dash means the instance type has no GPU.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="Price per GPU per hour: the $/hr above divided by the number of GPUs. Lets you compare accelerator cost across instance sizes — an 8-GPU box at $20/hr is cheaper per GPU than a 1-GPU box at $3/hr. Dash means the instance type has no GPU.">?</span> <span class="arrow">↕</span></span></th>
           <th class="num sortable" data-key="moves" style="width:134px"><span class="cell">Price moves<span
-            class="q" title="How many times AWS changed this price in the window, with its coefficient of variation. A hint that a zone is contended — NOT an availability or fulfillment signal.">?</span> <span class="arrow">↕</span></span></th>
+            class="q" title="How many times AWS changed this price in the window, with its coefficient of variation. A hint that a zone is contended, and not an availability or fulfillment signal.">?</span> <span class="arrow">↕</span></span></th>
           <th style="width:186px"><span class="cell">Last {{ config.history_days }}d<span
             class="q" title="Cheapest-zone price over the window. A break in the line is a bucket with no observation, never a zero.">?</span></span></th>
         </tr>
@@ -718,8 +724,8 @@
       <span class="estimate" id="pickest"></span>
       <span class="modalacts">
         <button type="button" class="btn" id="pickclear"
-          title="Empty both boxes. Note that an empty box means every value in it, so
-            this widens the scan to everything rather than narrowing it.">Unselect all</button>
+          title="Empty both boxes. An empty box means every value in it, so this
+            widens the scan to everything rather than narrowing it.">Unselect all</button>
         <button type="button" class="btn" id="pickvisible"
           title="Fill both boxes from the filters currently applied to the table">Use current filters</button>
         <button type="button" class="btn primary" id="pickgo">Scan</button>
@@ -936,10 +942,12 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       ondemand: onDemand,
       saves: (onDemand && onDemand > 0) ? (1 - price / onDemand) * 100 : null,
       // Pinned to the structural minimum: AWS does not sell spot below a tenth of
-      // list, so this price has nowhere left to fall. Same tolerance as the
-      // server-side `floor_stats`, for the same reason -- prices are quantized to
-      // micro-dollars and land a hair either side of 0.1 after dividing.
-      atFloor: (onDemand && onDemand > 0) && (price / onDemand) <= 0.101,
+      // list, so this price has nowhere left to fall. The threshold is rendered
+      // from the server's own constant, not retyped: the "At floor" toggle and the
+      // floor card's count have to select the same rows, and a second literal here
+      // would let them drift apart silently. The tolerance is in it because prices
+      // are quantized to micro-dollars and land a hair either side of 0.1.
+      atFloor: (onDemand && onDemand > 0) && (price / onDemand) <= {{ floor_threshold }},
       pergpu: gpuCount ? price / gpuCount : null,
       moves: r[8], cv: r[9],
       rle: r[10], kind: r[11]
@@ -1019,7 +1027,12 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
     return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   }
   function colorFor(key) {
-    return css(SLOTS[plotted.indexOf(key) % SLOTS.length]);
+    // A key that is not plotted has no slot. Without this guard `indexOf` returns
+    // -1, JS keeps the sign through `%`, and SLOTS[-1] is undefined -- which
+    // reaches CSS as an empty colour and paints an invisible series rather than
+    // failing. Every caller iterates `plotted` today; this keeps the next one honest.
+    var at = plotted.indexOf(key);
+    return at === -1 ? css('--muted') : css(SLOTS[at % SLOTS.length]);
   }
 
   // ------------------------------------------------------------------- grouping
@@ -1228,7 +1241,10 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   }
 
   // ---------------------------------------------------------------- row rendering
-  function money(v) { return '$' + v.toFixed(4); }
+  // `money` is declared once, further down with the chart helpers. A second
+  // `function money(v)` used to sit here: same scope, so the later declaration
+  // hoisted over it and every call in this section already resolved to that one.
+  // Editing this copy changed nothing, which is the worst kind of dead code.
   function group(n) { return n.toLocaleString('en-US'); }
 
   // Every string here comes from the AWS API (instance types, regions, zones) and
@@ -2248,9 +2264,18 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ instance_types: types, regions: regions })
     }).then(function (response) {
-      return response.json().then(function (body) {
-        if (!response.ok) { throw new Error(body.detail || response.statusText); }
-        return body;
+      // Read as text first. A handled error returns JSON with a `detail`, but an
+      // unhandled one is a plain-text 500, and calling .json() on that throws a
+      // parse error that replaces the real message with "Unexpected token 'I'".
+      return response.text().then(function (raw) {
+        var body = null;
+        try { body = JSON.parse(raw); } catch (e) { /* not JSON; keep the text */ }
+        if (!response.ok) {
+          throw new Error((body && body.detail)
+            || (raw || '').slice(0, 200)
+            || (response.status + ' ' + response.statusText));
+        }
+        return body || {};
       });
     }).then(function (body) {
       var failed = Object.keys(body.failures || {});
@@ -2275,11 +2300,94 @@ aws sso login --profile my-profile  # then: export AWS_PROFILE=my-profile</pre>
   // row action, because the row it lives on is replaced on each re-render.
   {% endif %}
 
+  {% if not snapshot %}
+  // ------------------------------------------------------------- session state
+  // A scan ends by reloading the page -- it has to, because the whole dataset is
+  // embedded server-side and there is no way to merge new rows client-side. That
+  // made the per-row ⟳, advertised as the cheapest possible question to ask AWS,
+  // silently discard every series you had plotted and every filter you had set.
+  // Saved on pagehide so one hook covers reload, navigation and tab close.
+  //
+  // **Live mode only.** A snapshot never reloads -- no scan, no auto-refresh -- so
+  // it has nothing to preserve state across, and sessionStorage is per *origin*
+  // rather than per page: a snapshot opened alongside a live dashboard would
+  // inherit its filters and paint an empty table for no visible reason.
+  var STATE_KEY = 'sf-state';
+
+  function saveState() {
+    try {
+      sessionStorage.setItem(STATE_KEY, JSON.stringify({
+        plotted: plotted,
+        hidden: Array.from(hidden),
+        types: Array.from(selectedTypes),
+        regions: Array.from(selectedRegions),
+        gpu: gpuonly.checked,
+        floor: flooronly.checked,
+        sortKey: sortKey,
+        sortDir: sortDir,
+        shown: shownLimit
+      }));
+    } catch (e) { /* private mode, or quota: state is a convenience, not data */ }
+  }
+
+  function restoreState() {
+    var saved = null;
+    try { saved = JSON.parse(sessionStorage.getItem(STATE_KEY)); } catch (e) { return; }
+    if (!saved) { return; }
+    // Keys are filtered against the current dataset: a scan can retire a row, and a
+    // plotted key with no row behind it would draw an empty series and leave a
+    // ghost in the legend. Filters are restored as-is -- if they now match nothing
+    // the table says so and offers Clear, which is truer than silently widening them.
+    plotted = (saved.plotted || []).filter(function (k) { return byKey[k]; })
+                                   .slice(0, MAX_SERIES);
+    (saved.hidden || []).forEach(function (k) { if (byKey[k]) { hidden.add(k); } });
+    (saved.types || []).forEach(function (t) { selectedTypes.add(t); });
+    (saved.regions || []).forEach(function (r) { selectedRegions.add(r); });
+    gpuonly.checked = !!saved.gpu;
+    flooronly.checked = !!saved.floor;
+    if (saved.sortKey) { sortKey = saved.sortKey; sortDir = saved.sortDir || 1; }
+    if (saved.shown > 0) { shownLimit = saved.shown; }
+  }
+
+  restoreState();
+  window.addEventListener('pagehide', saveState);
+  {% endif %}
+
   sortRows();          // make the header's opening claim true before painting it
-  applyFilters();
+  var restoredLimit = shownLimit;
+  applyFilters();      // resets shownLimit to one page; the restore outranks that
+  if (restoredLimit > shownLimit) { shownLimit = restoredLimit; renderRows(); }
+  typeMS.refresh(); regionMS.refresh();
   syncBoxes();
   paintSortIndicators();
   drawChart();
+
+  {% if not snapshot %}
+  // ------------------------------------------------------------- auto-refresh
+  // The poller writes every {{ config.poll_interval_s }}s; this brings the page up
+  // to it. It declines while you are working -- a dialog open, a scan in flight, or
+  // text selected -- and tries again a minute later. State survives either way, but
+  // yanking the page out from under an open chart is still rude.
+  var REFRESH_MS = {{ config.poll_interval_s }} * 1000;
+
+  function busy() {
+    // Text entry only, not focus generally: ticking a row's checkbox leaves that
+    // checkbox focused, and treating that as "busy" would suppress the refresh for
+    // the rest of the session after a single click.
+    var el = document.activeElement;
+    var typing = el && el.tagName === 'INPUT' && el.type === 'text';
+    return scanning
+      || zoom.open || picker.open || scanDialog.open
+      || typing
+      || String(window.getSelection ? window.getSelection() : '') !== '';
+  }
+
+  setInterval(function () {
+    if (busy()) { return; }
+    saveState();
+    location.reload();
+  }, REFRESH_MS);
+  {% endif %}
 })();
 </script>
 {% endif %}

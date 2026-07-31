@@ -88,7 +88,10 @@ def sparkline_svg(
         )
 
     label = (
-        f"price range ${low:.4f} to ${high:.4f} per GPU hour "
+        # Whole-instance $/hr: the caller passes `floor_usd_hr`, which is
+        # `price_usd_hr`, not the per-GPU view. Screen readers were being told
+        # every row -- CPU boxes included -- was priced per GPU.
+        f"price range ${low:.4f} to ${high:.4f} per hour "
         f"over {len(values)} buckets, {len(observed)} observed"
     )
     return (

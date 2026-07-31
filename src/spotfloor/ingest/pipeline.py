@@ -56,7 +56,14 @@ def run_tick(
         report.fetched[provider.name] = len(fetched)
         offerings.extend(fetched)
 
-    report.write = store.write(offerings, now=now)
+    # Guarded for the same reason `fetch` is: this ran unprotected, so any storage
+    # error escaped into the scheduler thread (killing the tick) or out of
+    # POST /api/refresh as a 500. A failed write is a reported failure, not a crash.
+    try:
+        report.write = store.write(offerings, now=now)
+    except Exception as exc:  # noqa: BLE001 - a bad write must not kill the poll loop
+        logger.exception("store.write failed")
+        report.failures["store"] = str(exc)
     logger.info(
         "tick fetched=%s inserted=%d extended=%d skipped=%d failures=%s",
         report.fetched,

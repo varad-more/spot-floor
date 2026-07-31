@@ -145,3 +145,37 @@ def test_latest_returns_one_row_per_series_and_drops_stale(store) -> None:
     # Past the freshness window the series is *not observed* -- not "unavailable".
     # Absence is never rendered as a fabricated value.
     assert store.latest(OfferingFilter(), now=T0 + timedelta(hours=1)) == []
+
+
+def test_second_writer_in_the_same_second_does_not_lose_the_batch(store, tmp_path) -> None:
+    """A price change landing on an instant a segment already starts at is skipped.
+
+    `_write_lock` is a threading.Lock, so it serializes nothing across processes:
+    `scripts/scan.py` writes to the same database a running `serve.py` polls. Two
+    writers reaching the same series in the same second used to raise IntegrityError
+    on the `ux_segment_start` unique index, which escaped `run_tick` (it does not
+    guard the write) and took every *other* offering in the batch down with it.
+    """
+    other = SqliteTimeSeriesStore(str(tmp_path / "test.db"))  # a second process
+    try:
+        assert store.write([offering(price=1.0)], now=T0).inserted == 1
+
+        healthy = [offering(price=5.0, machine=f"m{i}") for i in range(2, 5)]
+        result = other.write([offering(price=2.0), *healthy], now=T0)
+
+        assert result.skipped == 1, "the colliding series should be skipped, not raise"
+        assert result.inserted == 3, "the rest of the batch must still be written"
+    finally:
+        other.close()
+
+
+def test_backfilled_segment_start_does_not_break_the_next_poll(store) -> None:
+    """`serve.py --backfill` seeds segments, then the poller ticks immediately."""
+    from spotfloor.storage.base import OfferingRecord
+
+    store.backfill([OfferingRecord(offering=offering(price=1.0), first_seen=T0, last_seen=T0)])
+
+    result = store.write([offering(price=2.0)], now=T0)
+
+    assert result.skipped == 1
+    assert len(store.history(OfferingFilter(), TimeRange(T0, T0 + timedelta(hours=1)))) == 1

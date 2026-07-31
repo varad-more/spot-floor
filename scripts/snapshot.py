@@ -57,7 +57,9 @@ async def render(
         async with app.router.lifespan_context(app):
             index = await client.get("/")
             index.raise_for_status()
-            (out / "index.html").write_text(index.text)
+            # encoding pinned: the page carries em-dashes, arrows and ⤢/⟳, and
+            # write_text defaults to the locale encoding.
+            (out / "index.html").write_text(index.text, encoding="utf-8")
             written.append(out / "index.html")
 
             market = await client.get("/api/market")
@@ -67,7 +69,7 @@ async def render(
             # 15,000+ rows and `indent=2` roughly doubles it for whitespace that no
             # consumer reads -- and every regeneration commits the whole thing again.
             (out / "api" / "market.json").write_text(
-                json.dumps(market.json(), separators=(",", ":"))
+                json.dumps(market.json(), separators=(",", ":")), encoding="utf-8"
             )
             written.append(out / "api" / "market.json")
 
@@ -80,7 +82,9 @@ async def render(
                 if response.status_code != 200:
                     continue
                 path = history_dir / f"{instance_type}.json"
-                path.write_text(json.dumps(response.json(), separators=(",", ":")))
+                path.write_text(
+                    json.dumps(response.json(), separators=(",", ":")), encoding="utf-8"
+                )
                 written.append(path)
 
     return written
@@ -113,7 +117,11 @@ def main() -> int:
     for noisy in ("botocore", "boto3", "urllib3", "s3transfer"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-    out = Path(args.out)
+    # `--out` is deleted wholesale below, so refuse the paths where that means the
+    # working tree rather than a build directory.
+    out = Path(args.out).resolve()
+    if out == Path.cwd() or out in Path.cwd().parents:
+        parser.error(f"--out {args.out} would delete the working directory")
     if out.exists():
         shutil.rmtree(out)
     out.mkdir(parents=True)

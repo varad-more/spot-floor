@@ -789,6 +789,14 @@ def create_app(
                 "row_count": len(entries),
                 "floor": floor_stats(entries),
                 "floor_ratio_pct": int(SPOT_FLOOR_RATIO * 100),
+                "floor_ratio": SPOT_FLOOR_RATIO,
+                # The client's "At floor" toggle filters on this, so it is rendered
+                # from the same constant `floor_stats` counts with rather than
+                # retyped in JavaScript. The two used to be independent literals
+                # (0.10 + 0.001 here, 0.101 there): they agreed by coincidence, and
+                # editing the tolerance would have left the floor card reporting one
+                # count while the toggle showed a different set of rows.
+                "floor_threshold": SPOT_FLOOR_RATIO + _FLOOR_TOLERANCE,
                 "region_count": len({e.row.region for e in entries}),
                 "type_count": len({e.row.instance_type for e in entries}),
                 "gpu_type_count": len(
@@ -797,10 +805,16 @@ def create_app(
                 # One payload, not a list of rows plus a separate series blob: the
                 # table and the chart are two views of the same facts, and shipping
                 # them separately is how they drift apart.
+                # `<` escaped because this lands inside a <script> element, where
+                # the parser looks for `</script>` before it looks for JSON. Every
+                # string in here is an AWS identifier ([a-z0-9.-]) so nothing can
+                # carry that sequence today -- escaped anyway, for the same reason
+                # the client's `esc()` escapes row text rather than trusting the
+                # API's character set to stay as it is.
                 "table_data": json.dumps(
                     table_payload(entries, now=now, config=config),
                     separators=(",", ":"),
-                ),
+                ).replace("<", "\\u003c"),
                 "snapshot": snapshot,
             },
         )

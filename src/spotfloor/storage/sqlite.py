@@ -214,9 +214,10 @@ class SqliteTimeSeriesStore:
                         (ts, current["id"]),
                     )
                     extended += 1
-                else:
-                    self._insert(offering, ts)
+                elif self._insert(offering, ts):
                     inserted += 1
+                else:
+                    skipped += 1
 
         return WriteResult(inserted=inserted, extended=extended, skipped=skipped)
 
@@ -263,10 +264,25 @@ class SqliteTimeSeriesStore:
             last_seen,
         )
 
-    def _insert(self, offering: InstanceOffering, ts: int) -> None:
-        self._conn.execute(
-            self._INSERT.format(conflict=""), self._insert_params(offering, ts, ts)
+    def _insert(self, offering: InstanceOffering, ts: int) -> bool:
+        """Open a segment at ``ts``. False when one already starts at that instant.
+
+        ``OR IGNORE`` for the same reason :meth:`backfill` uses it: a collision on
+        ``ux_segment_start`` means this series already has a segment opening at this
+        second, which is the invariant holding rather than an error. It happens
+        whenever two writers land in the same second -- the poller racing a manual
+        ``scripts/scan.py`` (``_write_lock`` is per-process, so it does not serialize
+        them), a ``POST /api/refresh`` racing a scheduled tick, or a backfilled
+        segment whose start coincides with a poll.
+
+        A bare ``INSERT`` raised ``IntegrityError`` out through ``run_tick``, which
+        does not guard the write -- losing not just the colliding series but every
+        remaining offering in the batch, and returning 500 from the refresh route.
+        """
+        cursor = self._conn.execute(
+            self._INSERT.format(conflict="OR IGNORE"), self._insert_params(offering, ts, ts)
         )
+        return bool(cursor.rowcount)
 
     def backfill(self, segments: Sequence[OfferingRecord]) -> WriteResult:
         """Insert segments whose intervals are already known. See the protocol docstring.

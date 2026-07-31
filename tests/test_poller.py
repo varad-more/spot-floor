@@ -103,3 +103,19 @@ def test_stop_is_final(poller_store) -> None:
     settled = poller_store.writes
     time.sleep(2.5)
     assert poller_store.writes == settled
+
+
+def test_a_failed_write_is_reported_not_raised() -> None:
+    """Storage errors used to escape into the scheduler thread and out of
+    POST /api/refresh as a 500. A tick reports the failure and returns."""
+    from spotfloor.ingest.pipeline import run_tick
+
+    class BrokenStore(CountingStore):
+        def write(self, offerings, *, now):
+            raise RuntimeError("disk on fire")
+
+    report = run_tick([SilentProvider()], BrokenStore())
+
+    assert not report.ok
+    assert "disk on fire" in report.failures["store"]
+    assert report.write.inserted == 0
